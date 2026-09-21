@@ -4,18 +4,19 @@ import { ArrowDown, ArrowUp, Check, LoaderCircle, Pencil, Plus, Power, Trash2, X
 import { useState } from "react";
 import type { InventoryCategory } from "@/lib/types";
 
-export function SettingsView({ categories, categoriesLoading, categoriesError, categoriesDemo, retentionDays, onAddCategory, onRenameCategory, onReorderCategory, onToggleCategoryActive, onDeleteCategory, onRetentionChange }: {
+export function SettingsView({ categories, categoriesLoading, categoriesError, categoriesDemo, retentionDays, canEditRetention, onAddCategory, onRenameCategory, onReorderCategory, onToggleCategoryActive, onDeleteCategory, onRetentionChange }: {
   categories: InventoryCategory[];
   categoriesLoading: boolean;
   categoriesError: string;
   categoriesDemo: boolean;
   retentionDays: number;
+  canEditRetention: boolean;
   onAddCategory: (name: string) => Promise<string | void>;
   onRenameCategory: (id: string, name: string) => Promise<string | void>;
   onReorderCategory: (id: string, direction: "up" | "down") => Promise<string | void>;
   onToggleCategoryActive: (id: string, active: boolean) => Promise<string | void>;
   onDeleteCategory: (id: string) => Promise<string | void>;
-  onRetentionChange: (days: number) => void;
+  onRetentionChange: (days: number) => Promise<string | void>;
 }) {
   const [name, setName] = useState("");
   const [formError, setFormError] = useState("");
@@ -24,6 +25,8 @@ export function SettingsView({ categories, categoriesLoading, categoriesError, c
   const [editingName, setEditingName] = useState("");
   const [rowError, setRowError] = useState<{ id: string; message: string } | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [retentionError, setRetentionError] = useState("");
+  const [retentionSaving, setRetentionSaving] = useState(false);
 
   const sorted = [...categories].sort((a, b) => a.sortOrder - b.sortOrder);
 
@@ -88,6 +91,6 @@ export function SettingsView({ categories, categoriesLoading, categoriesError, c
         })}
       </div>}
     </section>
-    <section className="settings-card"><header><h2>進貨單照片保存</h2><p>正式模式會將照片放在Supabase Private Bucket。</p></header><label className="retention-option">保存天數<select value={retentionDays} onChange={(e) => onRetentionChange(Number(e.target.value))}><option value={30}>30天</option><option value={60}>60天</option><option value={90}>90天（建議）</option><option value={180}>180天</option><option value={365}>365天</option></select></label><div className="setting-note">使用者取消上傳時立即刪除；辨識失敗的暫存照片24小時後刪除；已入庫照片依此處設定自動清理。</div></section>
+    <section className="settings-card"><header><h2>進貨單照片保存</h2><p>正式模式會將照片放在Supabase Private Bucket。</p></header><label className="retention-option">保存天數<select value={retentionDays} disabled={!canEditRetention || retentionSaving} onChange={async (e) => { setRetentionSaving(true); setRetentionError(""); const error = await onRetentionChange(Number(e.target.value)); setRetentionSaving(false); if (error) setRetentionError(error); }}><option value={30}>30天</option><option value={60}>60天</option><option value={90}>90天（建議）</option><option value={180}>180天</option><option value={365}>365天</option></select></label>{!canEditRetention && <div className="setting-note">只有管理員與訂貨管家可以修改保存天數；此設定所有員工共用。</div>}{retentionError && <div className="error-box">{retentionError}</div>}<div className="setting-note">使用者取消上傳時立即刪除；辨識失敗的暫存照片24小時後刪除；已入庫照片依此處設定自動清理（修改後只影響之後新保存的進貨單）。</div></section>
   </div></>;
 }

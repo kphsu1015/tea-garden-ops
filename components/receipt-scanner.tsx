@@ -321,7 +321,6 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
             originalFileName: file?.name || "手動輸入進貨單",
             storagePath,
             warnings: analysis.warnings,
-            retentionDays,
             lines: analysis.lines.map((line) => ({
               action: line.action,
               itemName: line.itemName,

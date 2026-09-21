@@ -1,8 +1,31 @@
 import { NextResponse } from "next/server";
+import { getReceiptRetentionDays, mapReceiptRow, RECEIPT_SELECT_COLUMNS } from "@/lib/shared-records";
 import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
+
+// 最近的進貨單（含品項明細與非庫存費用）。所有在職員工讀到同一份（RLS：is_active_staff）。
+export async function GET() {
+  const supabase = await createClient();
+  if (!supabase) return NextResponse.json({ receipts: [], demo: true });
+
+  const session = await requireStaffSession(supabase);
+  if (!session.ok) return session.response;
+
+  try {
+    const { data, error } = await supabase
+      .from("receipts")
+      .select(RECEIPT_SELECT_COLUMNS)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    if (error) throw error;
+    return NextResponse.json({ receipts: (data ?? []).map((row) => mapReceiptRow(row as unknown as Parameters<typeof mapReceiptRow>[0])), demo: false });
+  } catch (error) {
+    console.error("List receipts failed", error);
+    return NextResponse.json({ error: "讀取進貨單失敗，請稍後再試。" }, { status: 500 });
+  }
+}
 
 type NewItemDraft = {
   name?: string;
@@ -54,7 +77,6 @@ export async function POST(request: Request) {
       originalFileName?: string;
       storagePath?: string;
       warnings?: string[];
-      retentionDays?: number;
       lines?: ReceiptLineInput[];
       charges?: ReceiptChargeInput[];
     };
@@ -122,7 +144,8 @@ export async function POST(request: Request) {
       p_original_file_name: body.originalFileName,
       p_storage_path: body.storagePath || null,
       p_warnings: body.warnings ?? [],
-      p_retention_days: body.retentionDays ?? 90,
+      // 保存天數以資料庫共用設定為準，不信任前端傳來的值，避免不同員工的瀏覽器設定不一致。
+      p_retention_days: await getReceiptRetentionDays(supabase),
       p_lines: lines,
       p_charges: charges,
     });

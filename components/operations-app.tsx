@@ -16,8 +16,9 @@ import { PurchaseReportView } from "@/components/purchase-report-view";
 import { ReceiptScanner } from "@/components/receipt-scanner";
 import { SettingsView } from "@/components/settings-view";
 import { StaffView } from "@/components/staff-view";
+import { requestJson, usePolling, useSharedData } from "@/components/use-shared-data";
 import { createClient } from "@/lib/supabase/client";
-import type { AssignableStaffRole, HandoverNote, InventoryCategory, InventoryItem, InventoryItemInput, MovementType, PurchaseRequest, PurchaseStatus, ReceiptRecord, UsagePeriod } from "@/lib/types";
+import type { AssignableStaffRole, HandoverNote, InventoryCategory, InventoryItem, InventoryItemInput, MovementType, NoteDraft, PurchaseDraft, PurchaseRequest, PurchaseStatus, ReceiptRecord, UsagePeriod } from "@/lib/types";
 
 type View = "dashboard" | "inventory" | "purchases" | "receipts" | "movement-log" | "report" | "notes" | "staff" | "settings";
 type Modal = "purchase" | "movement" | "item" | "note" | null;
@@ -110,19 +111,20 @@ function useCategories() {
   const [error, setError] = useState("");
   const [demo, setDemo] = useState(false);
 
-  const refresh = async () => {
-    setLoading(true);
-    setError("");
+  // silent：背景同步時不顯示「載入中」，失敗也不蓋掉畫面上已有的資料。
+  const refresh = async (silent = false) => {
+    if (!silent) { setLoading(true); setError(""); }
     try {
       const response = await fetch("/api/categories");
       const data = await response.json() as { categories?: InventoryCategory[]; demo?: boolean; error?: string };
       if (!response.ok) throw new Error(data.error || "讀取分類失敗");
       setCategories(data.categories || []);
       setDemo(Boolean(data.demo));
+      setError("");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "讀取分類失敗，請稍後再試。");
+      if (!silent) setError(reason instanceof Error ? reason.message : "讀取分類失敗，請稍後再試。");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -172,7 +174,7 @@ function useCategories() {
     });
   };
 
-  return { categories, loading, error, demo, addCategory, renameCategory, toggleCategoryActive, deleteCategory, reorderCategory };
+  return { categories, loading, error, demo, addCategory, renameCategory, toggleCategoryActive, deleteCategory, reorderCategory, refresh };
 }
 
 function useInventory() {
@@ -181,19 +183,19 @@ function useInventory() {
   const [error, setError] = useState("");
   const [demo, setDemo] = useState(false);
 
-  const refresh = async () => {
-    setLoading(true);
-    setError("");
+  const refresh = async (silent = false) => {
+    if (!silent) { setLoading(true); setError(""); }
     try {
       const response = await fetch("/api/inventory");
       const data = await response.json() as { items?: InventoryItem[]; demo?: boolean; error?: string };
       if (!response.ok) throw new Error(data.error || "讀取庫存失敗");
       setItems(data.items || []);
       setDemo(Boolean(data.demo));
+      setError("");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "讀取庫存失敗，請稍後再試。");
+      if (!silent) setError(reason instanceof Error ? reason.message : "讀取庫存失敗，請稍後再試。");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -304,11 +306,71 @@ export function OperationsApp() {
   const [deletingNote, setDeletingNote] = useState<HandoverNote | null>(null);
   const [query, setQuery] = useState("");
   const inventoryState = useInventory();
-  const [purchases, setPurchases] = useStoredState("tea-purchases", initialPurchases);
-  const [notes, setNotes] = useStoredState("tea-notes", initialNotes);
   const categoryState = useCategories();
-  const [receipts, setReceipts] = useStoredState<ReceiptRecord[]>("tea-receipts", []);
-  const [retentionDays, setRetentionDays] = useStoredState("tea-receipt-retention", 90);
+
+  // 採購需求、交接留言、進貨單、保存天數：已設定Supabase時全部讀寫資料庫，所有員工看到同一份，
+  // 並每30秒／切回分頁時自動更新；未設定Supabase的離線示範模式才退回各瀏覽器自己的localStorage。
+  const sharedEnabled = session.configured && session.status === "authed";
+  const [localPurchases, setLocalPurchases] = useStoredState("tea-purchases", initialPurchases);
+  const [localNotes, setLocalNotes] = useStoredState("tea-notes", initialNotes);
+  const [localReceipts, setLocalReceipts] = useStoredState<ReceiptRecord[]>("tea-receipts", []);
+  const [localRetentionDays, setLocalRetentionDays] = useStoredState("tea-receipt-retention", 90);
+  const purchasesState = useSharedData<PurchaseRequest[]>({ url: "/api/purchases", field: "purchases", enabled: sharedEnabled });
+  const notesState = useSharedData<HandoverNote[]>({ url: "/api/notes", field: "notes", enabled: sharedEnabled });
+  const receiptsState = useSharedData<ReceiptRecord[]>({ url: "/api/receipts", field: "receipts", enabled: sharedEnabled });
+  const settingsState = useSharedData<number>({ url: "/api/settings", field: "receiptRetentionDays", enabled: sharedEnabled });
+  usePolling(() => { inventoryState.refresh(true); categoryState.refresh(true); }, sharedEnabled);
+
+  const purchases = session.configured ? (purchasesState.data ?? []) : localPurchases;
+  const notes = session.configured ? (notesState.data ?? []) : localNotes;
+  const receipts = session.configured ? (receiptsState.data ?? []) : localReceipts;
+  const retentionDays = session.configured ? (settingsState.data ?? 90) : localRetentionDays;
+
+  const addPurchase = async (draft: PurchaseDraft): Promise<string | void> => {
+    if (!session.configured) {
+      setLocalPurchases([{ id: generateId(), ...draft, status: "待確認", requester: "Alan", requestedAt: new Date().toLocaleString("zh-TW", { hour12: false }) }, ...localPurchases]);
+      return;
+    }
+    const error = await requestJson("/api/purchases", "POST", draft);
+    if (error) return error;
+    await purchasesState.refresh(true);
+  };
+  const advancePurchase = async (id: string, status: PurchaseStatus): Promise<string | void> => {
+    if (!session.configured) {
+      setLocalPurchases(localPurchases.map((r) => r.id === id ? { ...r, status } : r));
+      return;
+    }
+    const error = await requestJson(`/api/purchases/${id}`, "PATCH", { status });
+    if (error) return error;
+    await purchasesState.refresh(true);
+  };
+  const addNote = async (draft: NoteDraft): Promise<string | void> => {
+    if (!session.configured) {
+      setLocalNotes([{ id: generateId(), ...draft, author: "Alan", createdAt: new Date().toLocaleString("zh-TW", { hour12: false }) }, ...localNotes]);
+      return;
+    }
+    const error = await requestJson("/api/notes", "POST", draft);
+    if (error) return error;
+    await notesState.refresh(true);
+  };
+  const deleteNote = async (id: string): Promise<string | void> => {
+    if (!session.configured) {
+      setLocalNotes(localNotes.filter((n) => n.id !== id));
+      return;
+    }
+    const error = await requestJson(`/api/notes/${id}`, "DELETE");
+    if (error) return error;
+    await notesState.refresh(true);
+  };
+  const changeRetentionDays = async (days: number): Promise<string | void> => {
+    if (!session.configured) {
+      setLocalRetentionDays(days);
+      return;
+    }
+    const error = await requestJson("/api/settings", "PATCH", { receiptRetentionDays: days });
+    if (error) return error;
+    await settingsState.refresh(true);
+  };
 
   // 即使Supabase Auth登入成功，只要不在白名單、被停用或角色無效，就立刻登出、拒絕進入系統，
   // 不能只是把畫面上的按鈕都鎖住而已。
@@ -422,15 +484,16 @@ export function OperationsApp() {
             onAddMovement={(item) => setMovingItem(item)}
             onPurchase={openPurchaseModal}
           />}
-          {view === "purchases" && <PurchasesView requests={purchases} setRequests={setPurchases} onNew={() => openPurchaseModal()} />}
+          {view === "purchases" && <PurchasesView requests={purchases} loading={session.configured && purchasesState.loading} loadError={session.configured ? purchasesState.error : ""} canAdvance={role === "admin" || role === "purchaser" || !session.configured} onAdvance={advancePurchase} onNew={() => openPurchaseModal()} />}
           {view === "receipts" && <ReceiptScanner inventory={activeInventory} categories={activeCategoryNames} receipts={receipts} retentionDays={retentionDays} onConfirm={async (record) => {
-            // 新品項建立、庫存數量與異動紀錄都已經在Supabase交易（RPC）內原子性完成，這裡只需要重新整理庫存即可。
+            // 新品項建立、庫存數量與異動紀錄都已經在Supabase交易（RPC）內原子性完成，這裡只需要重新整理庫存與進貨單列表。
             await inventoryState.refresh();
-            setReceipts([record, ...receipts]);
+            if (session.configured) await receiptsState.refresh(true);
+            else setLocalReceipts([record, ...localReceipts]);
           }} />}
           {view === "movement-log" && <MovementLogView inventory={inventory} />}
           {view === "report" && <PurchaseReportView canView={canViewPurchaseReport} canManage={role === "admin"} />}
-          {view === "notes" && <NotesView notes={notes} canManage={role === "admin"} onNew={() => setModal("note")} onDelete={(note) => setDeletingNote(note)} />}
+          {view === "notes" && <NotesView notes={notes} loading={session.configured && notesState.loading} loadError={session.configured ? notesState.error : ""} canManage={role === "admin"} onNew={() => setModal("note")} onDelete={(note) => setDeletingNote(note)} />}
           {view === "staff" && <StaffView canView={role === "admin"} canManage={role === "admin"} currentUserId={session.userId} />}
           {view === "settings" && <SettingsView
             categories={categoryState.categories}
@@ -438,17 +501,18 @@ export function OperationsApp() {
             categoriesError={categoryState.error}
             categoriesDemo={categoryState.demo}
             retentionDays={retentionDays}
+            canEditRetention={role === "admin" || role === "purchaser" || !session.configured}
             onAddCategory={categoryState.addCategory}
             onRenameCategory={categoryState.renameCategory}
             onReorderCategory={categoryState.reorderCategory}
             onToggleCategoryActive={categoryState.toggleCategoryActive}
             onDeleteCategory={categoryState.deleteCategory}
-            onRetentionChange={setRetentionDays}
+            onRetentionChange={changeRetentionDays}
           />}
         </section>
       </main>
 
-      {modal === "purchase" && <PurchaseModal inventory={activeInventory} categories={activeCategoryNames} initialItem={query} onClose={() => setModal(null)} onSave={(request) => { setPurchases([request, ...purchases]); setModal(null); setQuery(""); }} onCreateItem={inventoryState.createAndReturnItem} />}
+      {modal === "purchase" && <PurchaseModal inventory={activeInventory} categories={activeCategoryNames} initialItem={query} onClose={() => setModal(null)} onSave={async (draft) => { const error = await addPurchase(draft); if (error) return error; setModal(null); setQuery(""); }} onCreateItem={inventoryState.createAndReturnItem} />}
       {modal === "item" && <ItemModal
         categories={itemFormCategoryOptions}
         item={editingItem}
@@ -461,7 +525,7 @@ export function OperationsApp() {
           return error;
         }}
       />}
-      {modal === "note" && <NoteModal onClose={() => setModal(null)} onSave={(note) => { setNotes([note, ...notes]); setModal(null); }} />}
+      {modal === "note" && <NoteModal onClose={() => setModal(null)} onSave={async (draft) => { const error = await addNote(draft); if (error) return error; setModal(null); }} />}
       {deletingItem && <ConfirmDeleteItemModal
         item={deletingItem}
         onClose={() => setDeletingItem(null)}
@@ -480,7 +544,7 @@ export function OperationsApp() {
       {deletingNote && <ConfirmDeleteNoteModal
         note={deletingNote}
         onClose={() => setDeletingNote(null)}
-        onConfirm={() => setNotes(notes.filter((n) => n.id !== deletingNote.id))}
+        onConfirm={() => deleteNote(deletingNote.id)}
       />}
     </div>
   );
@@ -815,26 +879,40 @@ function InventoryView({ items, loading, error, demo, categories, query, setQuer
   </>;
 }
 
-function PurchasesView({ requests, setRequests, onNew }: {
+function PurchasesView({ requests, loading, loadError, canAdvance, onAdvance, onNew }: {
   requests: PurchaseRequest[];
-  setRequests: (r: PurchaseRequest[]) => void;
+  loading: boolean;
+  loadError: string;
+  canAdvance: boolean;
+  onAdvance: (id: string, status: PurchaseStatus) => Promise<string | void>;
   onNew: () => void;
 }) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState("");
+
   // 「採購需求」只是提醒／追蹤用的看板，不會直接增加庫存。「已到貨」是最後一步，只能標記已處理（純狀態文字），
   // 實際入庫一律要另外到「新增進貨單」建立進貨單，才會真正呼叫record_stock_movement增加庫存。
-  const advance = (request: PurchaseRequest) => {
+  const advance = async (request: PurchaseRequest) => {
     const index = statusSteps.indexOf(request.status);
     if (index < 0 || index >= statusSteps.length - 1) return;
-    setRequests(requests.map((r) => r.id === request.id ? { ...r, status: statusSteps[index + 1] } : r));
+    setBusyId(request.id);
+    setActionError("");
+    const error = await onAdvance(request.id, statusSteps[index + 1]);
+    setBusyId(null);
+    if (error) setActionError(error);
   };
 
   return <><PageHeader title="採購需求" subtitle="從提出、訂購到到貨，清楚追蹤每一項採購；實際入庫請另外到「新增進貨單」建立進貨單。" button="新增採購需求" onClick={onNew} />
+    {loadError && <div className="error-box">{loadError}</div>}
+    {actionError && <div className="error-box">{actionError}</div>}
+    {loading && requests.length === 0 && <p>載入採購需求中…</p>}
+    {!canAdvance && <div className="setting-note">只有管理員與訂貨管家可以推進採購狀態；你可以新增採購需求並查看進度。</div>}
     <div className="purchase-board">{statusSteps.slice(0, -1).map((status) => <section key={status} className="purchase-column"><header><span>{status}</span><b>{requests.filter((r) => r.status === status).length}</b></header><div className="purchase-column-list">{requests.filter((r) => r.status === status).map((r) => <article key={r.id} className="purchase-card">
       <div><strong>{r.itemName}</strong><span className="purchase-card-qty">{r.quantity} {r.unit}</span>{r.priority === "急件" && <Pill tone="red">急件</Pill>}</div>
       {r.note && <p>{r.note}</p>}
       <small>{r.requester} · {r.requestedAt}</small>
       {status === "已到貨" && <div className="error-box">• 這裡只是提醒，不會自動增加庫存。請到「新增進貨單」輸入進貨單，庫存才會真正更新。</div>}
-      <button onClick={() => advance(r)}>{status === "已到貨" ? "標記已處理" : "前往下一階段"}<ChevronRight size={15} /></button>
+      {canAdvance && <button disabled={busyId === r.id} onClick={() => advance(r)}>{status === "已到貨" ? "標記已處理" : "前往下一階段"}<ChevronRight size={15} /></button>}
     </article>)}</div></section>)}</div>
   </>;
 }
@@ -887,8 +965,8 @@ function MovementLogView({ inventory }: { inventory: InventoryItem[] }) {
 }
 
 
-function NotesView({ notes, canManage, onNew, onDelete }: { notes: HandoverNote[]; canManage: boolean; onNew: () => void; onDelete: (note: HandoverNote) => void }) {
-  return <><PageHeader title="交接留言" subtitle="將客人需求、房務、設備與餐飲事項留在對的位置。" button="新增交接留言" onClick={onNew} /><div className="notes-page">{notes.map((note) => <article key={note.id}><header><Pill tone={note.important ? "red" : "sage"}>{note.category}</Pill>{note.important && <span className="important-label">重要</span>}{canManage && <button className="note-delete" aria-label="刪除留言" onClick={() => onDelete(note)}><Trash2 size={15} /></button>}</header><p>{note.content}</p><footer>{note.author}<span>{note.createdAt}</span></footer></article>)}</div></>;
+function NotesView({ notes, loading, loadError, canManage, onNew, onDelete }: { notes: HandoverNote[]; loading: boolean; loadError: string; canManage: boolean; onNew: () => void; onDelete: (note: HandoverNote) => void }) {
+  return <><PageHeader title="交接留言" subtitle="將客人需求、房務、設備與餐飲事項留在對的位置。" button="新增交接留言" onClick={onNew} />{loadError && <div className="error-box">{loadError}</div>}{loading && notes.length === 0 && <p>載入交接留言中…</p>}<div className="notes-page">{notes.map((note) => <article key={note.id}><header><Pill tone={note.important ? "red" : "sage"}>{note.category}</Pill>{note.important && <span className="important-label">重要</span>}{canManage && <button className="note-delete" aria-label="刪除留言" onClick={() => onDelete(note)}><Trash2 size={15} /></button>}</header><p>{note.content}</p><footer>{note.author}<span>{note.createdAt}</span></footer></article>)}</div></>;
 }
 
 
@@ -906,7 +984,7 @@ function PurchaseModal({ inventory, categories, initialItem, onClose, onSave, on
   categories: string[];
   initialItem: string;
   onClose: () => void;
-  onSave: (p: PurchaseRequest) => void;
+  onSave: (p: PurchaseDraft) => Promise<string | void>;
   onCreateItem: (payload: InventoryItemInput) => Promise<InventoryItem | string>;
 }) {
   const first = inventory.find((i) => i.name === initialItem) || inventory[0];
@@ -931,7 +1009,10 @@ function PurchaseModal({ inventory, categories, initialItem, onClose, onSave, on
 
     if (mode === "existing") {
       if (!current) { setError("請選擇品項。"); return; }
-      onSave({ id: generateId(), itemName: current.name, inventoryItemId: current.id, quantity, unit: current.unit, priority, status: "待確認", requester: "Alan", requestedAt: new Date().toLocaleString("zh-TW", { hour12: false }), note });
+      setSubmitting(true);
+      const saveError = await onSave({ itemName: current.name, inventoryItemId: current.id, quantity, unit: current.unit, priority, note });
+      setSubmitting(false);
+      if (saveError) setError(saveError);
       return;
     }
 
@@ -945,7 +1026,10 @@ function PurchaseModal({ inventory, categories, initialItem, onClose, onSave, on
     });
     setSubmitting(false);
     if (typeof result === "string") { setError(result); return; }
-    onSave({ id: generateId(), itemName: result.name, inventoryItemId: result.id, quantity, unit: result.unit, priority, status: "待確認", requester: "Alan", requestedAt: new Date().toLocaleString("zh-TW", { hour12: false }), note });
+    setSubmitting(true);
+    const saveError = await onSave({ itemName: result.name, inventoryItemId: result.id, quantity, unit: result.unit, priority, note });
+    setSubmitting(false);
+    if (saveError) setError(saveError);
   };
 
   return <ModalShell title="新增採購需求" subtitle="提出後將進入待確認清單" onClose={onClose}><form onSubmit={submit}>
@@ -1094,11 +1178,23 @@ function ConfirmDeleteItemModal({ item, onClose, onConfirm }: { item: InventoryI
   </ModalShell>;
 }
 
-function ConfirmDeleteNoteModal({ note, onClose, onConfirm }: { note: HandoverNote; onClose: () => void; onConfirm: () => void }) {
+function ConfirmDeleteNoteModal({ note, onClose, onConfirm }: { note: HandoverNote; onClose: () => void; onConfirm: () => Promise<string | void> }) {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const confirm = async () => {
+    setSubmitting(true);
+    setError("");
+    const deleteError = await onConfirm();
+    setSubmitting(false);
+    if (deleteError) setError(deleteError); else onClose();
+  };
+
   return <ModalShell title="刪除交接留言" subtitle="此操作無法復原" onClose={onClose}>
     <p>確定要刪除這則留言嗎？</p>
     <div className="note-delete-preview"><Pill tone={note.important ? "red" : "sage"}>{note.category}</Pill><p>{note.content}</p><small>{note.author} · {note.createdAt}</small></div>
-    <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button danger-button" onClick={() => { onConfirm(); onClose(); }}>確定刪除</button></div>
+    {error && <div className="error-box">{error}</div>}
+    <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button danger-button" onClick={confirm} disabled={submitting}>{submitting ? "刪除中…" : "確定刪除"}</button></div>
   </ModalShell>;
 }
 
@@ -1129,7 +1225,8 @@ function StockCountModal({ item, onClose, onConfirm }: { item: InventoryItem; on
   </form></ModalShell>;
 }
 
-function NoteModal({ onClose, onSave }: { onClose: () => void; onSave: (n: HandoverNote) => void }) {
+function NoteModal({ onClose, onSave }: { onClose: () => void; onSave: (n: NoteDraft) => Promise<string | void> }) {
   const [category, setCategory] = useState<HandoverNote["category"]>("房務問題"); const [content, setContent] = useState(""); const [important, setImportant] = useState(false);
-  return <ModalShell title="新增交接留言" subtitle="重要事項請開啟標記，讓下一班人員優先看到" onClose={onClose}><form onSubmit={(e) => { e.preventDefault(); if (!content.trim()) return; onSave({ id: generateId(), category, content, important, author: "Alan", createdAt: new Date().toLocaleString("zh-TW", { hour12: false }) }); }}><label>分類<select value={category} onChange={(e) => setCategory(e.target.value as HandoverNote["category"])}><option>客人需求</option><option>房務問題</option><option>設備維修</option><option>餐飲</option><option>重要公告</option></select></label><label>留言內容<textarea required value={content} onChange={(e) => setContent(e.target.value)} placeholder="請清楚寫下需要接續處理的事情" /></label><label className="check-label"><input type="checkbox" checked={important} onChange={(e) => setImportant(e.target.checked)} />標記為重要事項</label><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button">新增留言</button></div></form></ModalShell>;
+  const [submitting, setSubmitting] = useState(false); const [error, setError] = useState("");
+  return <ModalShell title="新增交接留言" subtitle="重要事項請開啟標記，讓下一班人員優先看到" onClose={onClose}><form onSubmit={async (e) => { e.preventDefault(); if (!content.trim()) return; setSubmitting(true); setError(""); const saveError = await onSave({ category, content: content.trim(), important }); setSubmitting(false); if (saveError) setError(saveError); }}><label>分類<select value={category} onChange={(e) => setCategory(e.target.value as HandoverNote["category"])}><option>客人需求</option><option>房務問題</option><option>設備維修</option><option>餐飲</option><option>重要公告</option></select></label><label>留言內容<textarea required value={content} onChange={(e) => setContent(e.target.value)} placeholder="請清楚寫下需要接續處理的事情" /></label><label className="check-label"><input type="checkbox" checked={important} onChange={(e) => setImportant(e.target.checked)} />標記為重要事項</label>{error && <div className="error-box">{error}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={submitting}>{submitting ? "送出中…" : "新增留言"}</button></div></form></ModalShell>;
 }

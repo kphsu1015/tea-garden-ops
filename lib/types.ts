@@ -71,6 +71,8 @@ export interface PurchaseRequest {
   note?: string;
 }
 
+// 送出新採購需求時前端填的欄位；id、狀態、提出人、時間由伺服器（登入者身分）決定。
+export type PurchaseDraft = Pick<PurchaseRequest, "itemName" | "inventoryItemId" | "quantity" | "unit" | "priority" | "note">;
 
 export interface HandoverNote {
   id: string;
@@ -80,6 +82,8 @@ export interface HandoverNote {
   createdAt: string;
   important: boolean;
 }
+
+export type NoteDraft = Pick<HandoverNote, "category" | "content" | "important">;
 
 export type ReceiptLineResolution = "existing" | "create_new" | "ignore";
 

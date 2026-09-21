@@ -1,31 +1,39 @@
 import { NextResponse } from "next/server";
+import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-// 盤點／修正庫存：透過schema.sql既有的record_stock_movement()交易函式寫入，
+// 盤點／修正庫存、新增庫存異動：都透過schema.sql既有的record_stock_movement()交易函式寫入，
 // 這樣quantity與stock_movements紀錄一定同步，不會出現「改了數量卻沒留紀錄」的情況。
 // 該函式本身已限定admin／purchaser／housekeeper才能呼叫，這裡不需要另外開RLS政策。
+const ALLOWED_MOVEMENT_TYPES = new Set(["purchase_in", "daily_use", "room_supply", "food_use", "damaged", "expired", "adjustment"]);
+
 export async function POST(request: Request, { params }: RouteContext) {
   const supabase = await createClient();
   if (!supabase) return NextResponse.json({ error: "尚未設定Supabase，無法盤點庫存。" }, { status: 503 });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "請先登入後再操作。" }, { status: 401 });
+  const session = await requireStaffSession(supabase);
+  if (!session.ok) return session.response;
 
   const { id } = await params;
   try {
-    const body = await request.json() as { changeAmount?: number; note?: string };
-    const changeAmount = body.changeAmount;
-    if (typeof changeAmount !== "number" || !Number.isFinite(changeAmount) || changeAmount === 0) {
+    const body = await request.json() as { changeAmount?: number; note?: string; movementType?: string };
+    if (typeof body.changeAmount !== "number" || !Number.isFinite(body.changeAmount)) {
       return NextResponse.json({ error: "差異數量必須是不為0的數字。" }, { status: 400 });
     }
+    // 庫存數量一律整數，即使呼叫端傳了小數也在這裡四捨五入；四捨五入後若變成0視同沒有差異，直接拒絕。
+    const changeAmount = Math.round(body.changeAmount);
+    if (changeAmount === 0) {
+      return NextResponse.json({ error: "差異數量必須是不為0的數字。" }, { status: 400 });
+    }
+    const movementType = body.movementType && ALLOWED_MOVEMENT_TYPES.has(body.movementType) ? body.movementType : "adjustment";
 
     const { data, error } = await supabase.rpc("record_stock_movement", {
       target_item: id,
-      movement: "adjustment",
+      movement: movementType,
       change_amount: changeAmount,
       movement_note: body.note?.trim() || null,
     });

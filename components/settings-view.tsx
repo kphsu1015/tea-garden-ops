@@ -64,23 +64,23 @@ export function SettingsView({ categories, categoriesLoading, categoriesError, c
           return <div key={category.id} className={category.active ? "" : "category-inactive"}>
             {editing ? <>
               <input value={editingName} onChange={(e) => setEditingName(e.target.value)} autoFocus />
-              <button aria-label="儲存名稱" disabled={busy} onClick={() => runRowAction(category.id, async () => {
+              <button aria-label="儲存名稱" title="儲存名稱" disabled={busy} onClick={() => runRowAction(category.id, async () => {
                 const value = editingName.trim();
                 if (!value) return "請輸入分類名稱。";
                 const error = await onRenameCategory(category.id, value);
                 if (!error) setEditingId(null);
                 return error;
               })}><Check size={16} /></button>
-              <button aria-label="取消編輯" onClick={() => { setEditingId(null); setRowError(null); }}><X size={16} /></button>
+              <button aria-label="取消編輯" title="取消編輯" onClick={() => { setEditingId(null); setRowError(null); }}><X size={16} /></button>
             </> : <>
               <span>{category.name}{!category.active && <em className="inactive-label">已停用</em>}</span>
               <small>{category.itemCount + category.receiptLineCount > 0 ? `使用中：庫存${category.itemCount}項／進貨紀錄${category.receiptLineCount}筆` : "尚未被使用"}</small>
               <div className="category-actions">
-                <button aria-label="上移" disabled={busy || index === 0} onClick={() => runRowAction(category.id, () => onReorderCategory(category.id, "up"))}><ArrowUp size={15} /></button>
-                <button aria-label="下移" disabled={busy || index === sorted.length - 1} onClick={() => runRowAction(category.id, () => onReorderCategory(category.id, "down"))}><ArrowDown size={15} /></button>
-                <button aria-label="編輯名稱" disabled={busy} onClick={() => { setEditingId(category.id); setEditingName(category.name); setRowError(null); }}><Pencil size={15} /></button>
-                <button aria-label={category.active ? "停用分類" : "啟用分類"} disabled={busy} onClick={() => runRowAction(category.id, () => onToggleCategoryActive(category.id, !category.active))}><Power size={15} /></button>
-                <button className="danger" aria-label={`刪除${category.name}`} disabled={busy} onClick={() => runRowAction(category.id, () => onDeleteCategory(category.id))}><Trash2 size={15} /></button>
+                <button aria-label="上移" title="上移" disabled={busy || index === 0} onClick={() => runRowAction(category.id, () => onReorderCategory(category.id, "up"))}><ArrowUp size={15} /></button>
+                <button aria-label="下移" title="下移" disabled={busy || index === sorted.length - 1} onClick={() => runRowAction(category.id, () => onReorderCategory(category.id, "down"))}><ArrowDown size={15} /></button>
+                <button aria-label="編輯名稱" title="編輯名稱" disabled={busy} onClick={() => { setEditingId(category.id); setEditingName(category.name); setRowError(null); }}><Pencil size={15} /></button>
+                <button aria-label={category.active ? "停用分類" : "啟用分類"} title={category.active ? "停用分類" : "啟用分類"} disabled={busy} onClick={() => runRowAction(category.id, () => onToggleCategoryActive(category.id, !category.active))}><Power size={15} /></button>
+                <button className="danger" aria-label={`刪除${category.name}`} title={`刪除${category.name}`} disabled={busy} onClick={() => runRowAction(category.id, () => onDeleteCategory(category.id))}><Trash2 size={15} /></button>
               </div>
             </>}
             {rowError?.id === category.id && <div className="error-box">{rowError.message}</div>}

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -7,7 +8,6 @@ type NewItemDraft = {
   name?: string;
   category?: string;
   unit?: string;
-  location?: string;
   safetyStock?: number;
   usageForecastEnabled?: boolean;
   estimatedUsage?: number;
@@ -26,14 +26,24 @@ type ReceiptLineInput = {
   newItem?: NewItemDraft;
 };
 
+const CHARGE_TYPES = ["shipping", "handling", "tax", "discount", "other_fee"] as const;
+type ChargeType = typeof CHARGE_TYPES[number];
+
+type ReceiptChargeInput = {
+  chargeType: ChargeType;
+  description?: string;
+  amount: number;
+};
+
 // 確認入庫：建立進貨單、（若有）建立新庫存品項、寫入品項明細與庫存異動，全部在單一Postgres交易（RPC）內完成，
-// 任一步驟失敗都會整筆回滾，不會留下只建立一半的資料。只有真的完成照片上傳（有storagePath）才會呼叫這支。
+// 任一步驟失敗都會整筆回滾，不會留下只建立一半的資料。storagePath是選填的：拍照辨識完成上傳後才會有；
+// 手動輸入進貨單沒有照片，storagePath留空即可，receipts.storage_path欄位已改成可以是null。
 export async function POST(request: Request) {
   const supabase = await createClient();
   if (!supabase) return NextResponse.json({ error: "尚未設定Supabase，無法保存進貨單。" }, { status: 503 });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "請先登入後再操作。" }, { status: 401 });
+  const session = await requireStaffSession(supabase);
+  if (!session.ok) return session.response;
 
   try {
     const body = await request.json() as {
@@ -46,14 +56,28 @@ export async function POST(request: Request) {
       warnings?: string[];
       retentionDays?: number;
       lines?: ReceiptLineInput[];
+      charges?: ReceiptChargeInput[];
     };
 
-    if (!body.storagePath) return NextResponse.json({ error: "缺少照片儲存路徑。" }, { status: 400 });
     if (!body.originalFileName) return NextResponse.json({ error: "缺少檔案名稱。" }, { status: 400 });
-    if (!Array.isArray(body.lines) || body.lines.length === 0) return NextResponse.json({ error: "至少需要一筆品項。" }, { status: 400 });
-    if (typeof body.totalAmount === "number" && body.totalAmount < 0) return NextResponse.json({ error: "單據總額不可為負數。" }, { status: 400 });
+    // 庫存數量、安全庫存、預估使用量一律整數，即使呼叫端傳了小數也在這裡四捨五入，不會存進小數。
+    const lines = (body.lines ?? []).map((line) => ({
+      ...line,
+      quantity: Math.round(line.quantity),
+      newItem: line.newItem ? {
+        ...line.newItem,
+        safetyStock: typeof line.newItem.safetyStock === "number" ? Math.round(line.newItem.safetyStock) : line.newItem.safetyStock,
+        estimatedUsage: typeof line.newItem.estimatedUsage === "number" ? Math.round(line.newItem.estimatedUsage) : line.newItem.estimatedUsage,
+      } : line.newItem,
+    }));
+    const charges = body.charges ?? [];
+    if (lines.length === 0 && charges.length === 0) return NextResponse.json({ error: "至少需要一筆庫存品項或費用。" }, { status: 400 });
+    // 進貨單一定要有金額才能送出，不管是AI辨識還是手動輸入。
+    if (typeof body.totalAmount !== "number" || !(body.totalAmount > 0)) {
+      return NextResponse.json({ error: "請填寫單據總額（必須大於0）。" }, { status: 400 });
+    }
 
-    for (const line of body.lines) {
+    for (const line of lines) {
       if (!(line.quantity > 0)) return NextResponse.json({ error: "品項數量必須大於0。" }, { status: 400 });
       if (typeof line.unitPrice === "number" && line.unitPrice < 0) return NextResponse.json({ error: "單價不可為負數。" }, { status: 400 });
       if (typeof line.totalPrice === "number" && line.totalPrice < 0) return NextResponse.json({ error: "品項金額不可為負數。" }, { status: 400 });
@@ -65,8 +89,8 @@ export async function POST(request: Request) {
       }
       if (line.action === "create_new") {
         const draft = line.newItem;
-        if (!draft?.name?.trim() || !draft?.category?.trim() || !draft?.unit?.trim() || !draft?.location?.trim()) {
-          return NextResponse.json({ error: `「${line.itemName}」的新品項資料尚未填寫完整（名稱／大分類／單位／存放位置）。` }, { status: 400 });
+        if (!draft?.name?.trim() || !draft?.category?.trim() || !draft?.unit?.trim()) {
+          return NextResponse.json({ error: `「${line.itemName}」的新品項資料尚未填寫完整（名稱／大分類／單位）。` }, { status: 400 });
         }
         if (draft.usageForecastEnabled) {
           if (typeof draft.estimatedUsage !== "number" || draft.estimatedUsage <= 0) {
@@ -79,16 +103,28 @@ export async function POST(request: Request) {
       }
     }
 
+    // 非庫存費用（運費／處理費／稅額／折扣／其他費用）：不要求分類、數量、單位或對應庫存，
+    // 只需要合法的費用類型與不為負數的金額，確認入庫後只會寫入receipt_charges，不會建立庫存品項或庫存異動。
+    for (const charge of charges) {
+      if (!CHARGE_TYPES.includes(charge.chargeType)) {
+        return NextResponse.json({ error: "費用類型不正確，請選擇運費、處理費、稅額、折扣或其他費用。" }, { status: 400 });
+      }
+      if (typeof charge.amount !== "number" || !Number.isFinite(charge.amount) || charge.amount < 0) {
+        return NextResponse.json({ error: "費用金額必須是不小於0的數字。" }, { status: 400 });
+      }
+    }
+
     const { data, error } = await supabase.rpc("confirm_receipt_with_lines", {
       p_supplier: body.supplier?.trim() || null,
       p_purchase_date: body.purchaseDate || null,
       p_invoice_number: body.invoiceNumber?.trim() || null,
       p_total_amount: typeof body.totalAmount === "number" ? body.totalAmount : null,
       p_original_file_name: body.originalFileName,
-      p_storage_path: body.storagePath,
+      p_storage_path: body.storagePath || null,
       p_warnings: body.warnings ?? [],
       p_retention_days: body.retentionDays ?? 90,
-      p_lines: body.lines,
+      p_lines: lines,
+      p_charges: charges,
     });
 
     if (error) {
@@ -97,6 +133,7 @@ export async function POST(request: Request) {
       if (error.code === "P0001") {
         if (error.message.includes("not authorized")) return NextResponse.json({ error: "沒有權限建立進貨單。" }, { status: 403 });
         if (error.message.includes("only admin or purchaser can create new inventory items")) return NextResponse.json({ error: "只有管理員或訂貨管家可以建立新庫存品項，請改選「對應現有庫存」或「忽略此品項」，或請管理員／訂貨管家協助入庫。" }, { status: 403 });
+        if (error.message.includes("total amount is required")) return NextResponse.json({ error: "請填寫單據總額（必須大於0）。" }, { status: 400 });
         return NextResponse.json({ error: error.message }, { status: 400 });
       }
       throw error;

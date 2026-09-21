@@ -132,9 +132,9 @@ export function PurchaseReportView({ canView, canManage }: { canView: boolean; c
     <div className="section-header">
       <div><h1>進貨報表</h1><p>只統計已確認入庫（status = stocked）的進貨單，月份以進貨日期（Asia/Taipei）為準。</p></div>
       <div className="report-month-picker">
-        <button className="icon-button" aria-label="上一個月" onClick={() => changeMonth(shiftMonth(month, -1))}><ChevronLeft size={18} /></button>
+        <button className="icon-button" aria-label="上一個月" title="上一個月" onClick={() => changeMonth(shiftMonth(month, -1))}><ChevronLeft size={18} /></button>
         <input type="month" value={month.slice(0, 7)} onChange={(e) => { if (e.target.value) changeMonth(`${e.target.value}-01`); }} />
-        <button className="icon-button" aria-label="下一個月" onClick={() => changeMonth(shiftMonth(month, 1))}><ChevronRight size={18} /></button>
+        <button className="icon-button" aria-label="下一個月" title="下一個月" onClick={() => changeMonth(shiftMonth(month, 1))}><ChevronRight size={18} /></button>
       </div>
     </div>
 
@@ -150,6 +150,8 @@ export function PurchaseReportView({ canView, canManage }: { canView: boolean; c
         <div className="settings-card report-summary-card"><small>本月進貨品項數量</small><strong>{formatNumber(summary.itemCount)}筆</strong></div>
         <div className="settings-card report-summary-card"><small>最大支出分類</small><strong>{summary.topCategoryName || "—"}</strong><span>{formatCurrency(summary.topCategoryAmount)}</span></div>
         <div className="settings-card report-summary-card"><small>最大支出供應商</small><strong>{summary.topSupplierName || "—"}</strong><span>{formatCurrency(summary.topSupplierAmount)}</span></div>
+        <div className="settings-card report-summary-card"><small>本月運費</small><strong>{formatCurrency(summary.shippingAmount)}</strong></div>
+        <div className="settings-card report-summary-card"><small>本月其他費用</small><strong>{formatCurrency(summary.otherFeeAmount)}</strong><span>處理費／稅額／其他費用，已扣除折扣</span></div>
         <div className="settings-card report-summary-card">
           <small>與上月相比</small>
           <strong className={monthDelta > 0 ? "danger-text" : monthDelta < 0 ? "positive-text" : ""}>
@@ -222,7 +224,7 @@ export function PurchaseReportView({ canView, canManage }: { canView: boolean; c
         <td>{line.unitPrice !== null ? formatCurrency(line.unitPrice) : "—"}</td>
         <td>{line.effectiveAmount !== null ? formatCurrency(line.effectiveAmount) : <span className="danger-text">金額資料不完整</span>}</td>
         <td><span className="pill">已入庫</span></td>
-        <td>{showReceiptActions && canManage && <div className="row-actions"><button aria-label="編輯金額" onClick={() => setEditingReceiptId(line.receiptId)}><Pencil size={15} /></button><button className="danger" aria-label="刪除進貨單" onClick={() => setDeletingReceiptId(line.receiptId)}><Trash2 size={15} /></button></div>}</td>
+        <td>{showReceiptActions && canManage && <div className="row-actions"><button aria-label="編輯金額" title="編輯金額" onClick={() => setEditingReceiptId(line.receiptId)}><Pencil size={15} /></button><button className="danger" aria-label="刪除進貨單" title="刪除進貨單" onClick={() => setDeletingReceiptId(line.receiptId)}><Trash2 size={15} /></button></div>}</td>
       </tr>;
     })}</tbody></table></div>}
 
@@ -295,7 +297,7 @@ function EditReceiptAmountsModal({ receiptId, lines, onClose, onSaved }: {
   };
 
   return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><div className="modal report-edit-modal">
-    <header><div><h2>編輯進貨單金額</h2><p>{lines[0]?.supplier || "未標示供應商"} · {lines[0]?.purchaseDate || "—"}</p></div><button onClick={onClose} aria-label="關閉"><X /></button></header>
+    <header><div><h2>編輯進貨單金額</h2><p>{lines[0]?.supplier || "未標示供應商"} · {lines[0]?.purchaseDate || "—"}</p></div><button onClick={onClose} aria-label="關閉" title="關閉"><X /></button></header>
     <form onSubmit={submit}>
       <label>單據總額（留白表示以品項金額加總計算）<input type="number" min="0" step="0.01" value={totalAmount} onChange={(e) => setTotalAmount(e.target.value)} placeholder="例如：1250" /></label>
       <div className="report-edit-lines">{lines.map((line) => <div key={line.lineId} className="report-edit-line">
@@ -337,7 +339,7 @@ function ConfirmDeleteReceiptModal({ receiptId, supplier, purchaseDate, onClose,
   };
 
   return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><div className="modal">
-    <header><div><h2>刪除進貨單</h2><p>此操作無法復原，報表將不再計入這筆資料</p></div><button onClick={onClose} aria-label="關閉"><X /></button></header>
+    <header><div><h2>刪除進貨單</h2><p>此操作無法復原，報表將不再計入這筆資料</p></div><button onClick={onClose} aria-label="關閉" title="關閉"><X /></button></header>
     <div className="modal-body">
       <p>確定要刪除 <strong>{supplier || "未標示供應商"}</strong>（{purchaseDate || "日期未知"}）這張已入庫的進貨單嗎？連同其所有品項明細一併刪除。</p>
       {error && <div className="error-box">{error}</div>}

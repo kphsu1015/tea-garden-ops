@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getTaipeiMonthStart, isValidMonthStart, mapLineRow } from "@/lib/purchase-report";
+import { requireStaffSession } from "@/lib/staff-auth";
 
 export const runtime = "nodejs";
 
@@ -8,8 +9,8 @@ export async function GET(request: Request) {
   const supabase = await createClient();
   if (!supabase) return NextResponse.json({ demo: true, lines: [] });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "請先登入後再查看報表。" }, { status: 401 });
+  const session = await requireStaffSession(supabase);
+  if (!session.ok) return session.response;
 
   const { searchParams } = new URL(request.url);
   const rawMonth = searchParams.get("month");

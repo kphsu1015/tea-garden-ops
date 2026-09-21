@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { buildUsageForecastColumns, INVENTORY_SELECT_COLUMNS, listInventoryItems, mapInventoryRow } from "@/lib/inventory";
 import { initialInventory } from "@/lib/demo-data";
+import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 import type { InventoryItemInput } from "@/lib/types";
 
@@ -10,8 +11,8 @@ export async function GET() {
   const supabase = await createClient();
   if (!supabase) return NextResponse.json({ items: initialInventory, demo: true });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "請先登入後再查看庫存。" }, { status: 401 });
+  const session = await requireStaffSession(supabase);
+  if (!session.ok) return session.response;
 
   try {
     const items = await listInventoryItems(supabase);
@@ -26,8 +27,8 @@ export async function POST(request: Request) {
   const supabase = await createClient();
   if (!supabase) return NextResponse.json({ error: "尚未設定Supabase，無法新增品項。" }, { status: 503 });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "請先登入後再操作。" }, { status: 401 });
+  const session = await requireStaffSession(supabase);
+  if (!session.ok) return session.response;
 
   try {
     const body = await request.json() as Partial<InventoryItemInput>;
@@ -45,9 +46,9 @@ export async function POST(request: Request) {
         name,
         category,
         base_unit: body.unit?.trim() || "個",
-        storage_location: body.location?.trim() || "待設定",
-        safety_stock: Number.isFinite(body.safetyStock) ? body.safetyStock : 0,
-        suggested_purchase: Number.isFinite(body.suggestedPurchase) ? body.suggestedPurchase : 1,
+        // 庫存、安全庫存一律整數，即使呼叫端傳了小數也在這裡四捨五入，不會存進小數。
+        safety_stock: Number.isFinite(body.safetyStock) ? Math.round(body.safetyStock as number) : 0,
+        suggested_purchase: Number.isFinite(body.suggestedPurchase) ? Math.round(body.suggestedPurchase as number) : 1,
         supplier: body.supplier?.trim() || null,
         nearest_expiry_date: body.expiryDate || null,
         ...forecast.columns,

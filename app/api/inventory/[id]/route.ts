@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { buildUsageForecastColumns, INVENTORY_SELECT_COLUMNS, mapInventoryRow } from "@/lib/inventory";
+import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 import type { InventoryItemInput } from "@/lib/types";
 
@@ -16,8 +17,8 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   const supabase = await createClient();
   if (!supabase) return NextResponse.json({ error: "尚未設定Supabase，無法修改品項。" }, { status: 503 });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "請先登入後再操作。" }, { status: 401 });
+  const session = await requireStaffSession(supabase);
+  if (!session.ok) return session.response;
 
   const { id } = await params;
   try {
@@ -34,9 +35,9 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       updates.category = category;
     }
     if (typeof body.unit === "string") updates.base_unit = body.unit.trim() || "個";
-    if (typeof body.location === "string") updates.storage_location = body.location.trim() || "待設定";
-    if (typeof body.safetyStock === "number" && Number.isFinite(body.safetyStock)) updates.safety_stock = body.safetyStock;
-    if (typeof body.suggestedPurchase === "number" && Number.isFinite(body.suggestedPurchase)) updates.suggested_purchase = body.suggestedPurchase;
+    // 庫存、安全庫存一律整數，即使呼叫端傳了小數也在這裡四捨五入，不會存進小數。
+    if (typeof body.safetyStock === "number" && Number.isFinite(body.safetyStock)) updates.safety_stock = Math.round(body.safetyStock);
+    if (typeof body.suggestedPurchase === "number" && Number.isFinite(body.suggestedPurchase)) updates.suggested_purchase = Math.round(body.suggestedPurchase);
     if (typeof body.supplier === "string") updates.supplier = body.supplier.trim() || null;
     if (typeof body.expiryDate === "string") updates.nearest_expiry_date = body.expiryDate || null;
     if (typeof body.active === "boolean") updates.active = body.active;
@@ -72,8 +73,8 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   const supabase = await createClient();
   if (!supabase) return NextResponse.json({ error: "尚未設定Supabase，無法刪除品項。" }, { status: 503 });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "請先登入後再操作。" }, { status: 401 });
+  const session = await requireStaffSession(supabase);
+  if (!session.ok) return session.response;
 
   const { id } = await params;
   try {

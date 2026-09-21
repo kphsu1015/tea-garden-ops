@@ -10,12 +10,21 @@ export const STAFF_ROLE_LABELS: Record<StaffRole, string> = {
 
 export const ASSIGNABLE_STAFF_ROLES: AssignableStaffRole[] = ["admin", "purchaser", "housekeeper"];
 
+// 「新增員工」表單只能選這兩個角色；管理員角色不在這個列表裡，避免誤邀成管理員。
+export const INVITABLE_STAFF_ROLES: Array<"purchaser" | "housekeeper"> = ["purchaser", "housekeeper"];
+
 export function staffRoleLabel(role: StaffRole): string {
   return STAFF_ROLE_LABELS[role] ?? role;
 }
 
 export function isAssignableStaffRole(role: string): role is AssignableStaffRole {
   return role === "admin" || role === "purchaser" || role === "housekeeper";
+}
+
+// 邀請「新員工」（第一次建立staff_profiles）只能指定訂貨管家或管家；管理員帳號一律由現有admin
+// 透過編輯既有員工角色來指定，不透過這個新增流程建立，避免有人被誤邀成管理員。
+export function isInvitableStaffRole(role: string): role is "purchaser" | "housekeeper" {
+  return role === "purchaser" || role === "housekeeper";
 }
 
 type StaffProfileRow = {

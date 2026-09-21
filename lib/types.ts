@@ -31,7 +31,6 @@ export interface InventoryItem {
   id: string;
   name: string;
   category: Category;
-  location: string;
   quantity: number;
   safetyStock: number;
   suggestedPurchase: number;
@@ -48,7 +47,6 @@ export interface InventoryItemInput {
   name: string;
   category: string;
   unit: string;
-  location: string;
   safetyStock: number;
   suggestedPurchase: number;
   supplier?: string;
@@ -61,6 +59,9 @@ export interface InventoryItemInput {
 export interface PurchaseRequest {
   id: string;
   itemName: string;
+  // 提出採購需求時選的庫存品項id；「確認入庫」時用這個id直接寫入stock_movements，避免品項改名後用名稱比對失準。
+  // 舊資料（這個欄位還沒存在前建立的採購需求）可能沒有這個值，確認入庫時會退回用品項名稱比對。
+  inventoryItemId?: string;
   quantity: number;
   unit: string;
   priority: "一般" | "急件";
@@ -70,16 +71,6 @@ export interface PurchaseRequest {
   note?: string;
 }
 
-export interface StockMovement {
-  id: string;
-  itemName: string;
-  type: MovementType;
-  change: number;
-  unit: string;
-  operator: string;
-  createdAt: string;
-  note?: string;
-}
 
 export interface HandoverNote {
   id: string;
@@ -105,12 +96,23 @@ export interface ReceiptLine {
   resolution?: ReceiptLineResolution;
 }
 
+// 運費／處理費／稅額／折扣／其他費用：這些不是庫存品項，不會建立inventory_items，也不會增加庫存數量。
+export type ReceiptChargeType = "shipping" | "handling" | "tax" | "discount" | "other_fee";
+
+export interface ReceiptCharge {
+  id: string;
+  chargeType: ReceiptChargeType;
+  description?: string;
+  amount: number;
+}
+
 export interface ReceiptAnalysis {
   supplier: string;
   purchaseDate: string;
   invoiceNumber?: string;
   totalAmount?: number;
   lines: ReceiptLine[];
+  charges: ReceiptCharge[];
   warnings: string[];
 }
 

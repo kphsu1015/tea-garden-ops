@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { demoCategoryList, listCategories } from "@/lib/categories";
+import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -8,8 +9,8 @@ export async function GET() {
   const supabase = await createClient();
   if (!supabase) return NextResponse.json({ categories: demoCategoryList(), demo: true });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "請先登入後再查看分類。" }, { status: 401 });
+  const session = await requireStaffSession(supabase);
+  if (!session.ok) return session.response;
 
   try {
     const categories = await listCategories(supabase);
@@ -24,8 +25,8 @@ export async function POST(request: Request) {
   const supabase = await createClient();
   if (!supabase) return NextResponse.json({ error: "尚未設定Supabase，無法新增分類。" }, { status: 503 });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "請先登入後再操作。" }, { status: 401 });
+  const session = await requireStaffSession(supabase);
+  if (!session.ok) return session.response;
 
   try {
     const body = await request.json() as { name?: string };

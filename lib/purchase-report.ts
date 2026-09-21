@@ -44,6 +44,9 @@ export interface PurchaseMonthlySummary {
   topSupplierName: string | null;
   topSupplierAmount: number | null;
   prevMonthTotalAmount: number;
+  // 運費另外列出；其他費用＝處理費／包裝費＋稅額＋其他費用（折扣已從中扣除），不含運費，避免跟totalAmount重複認知。
+  shippingAmount: number;
+  otherFeeAmount: number;
 }
 
 export interface PurchaseTrendPoint { month: string; totalAmount: number }
@@ -73,6 +76,7 @@ type RawSummaryRow = {
   top_category_name: string | null; top_category_amount: number | null;
   top_supplier_name: string | null; top_supplier_amount: number | null;
   prev_month_total_amount: number;
+  shipping_amount: number; other_fee_amount: number;
 };
 
 export function mapSummaryRow(input: unknown): PurchaseMonthlySummary {
@@ -86,6 +90,8 @@ export function mapSummaryRow(input: unknown): PurchaseMonthlySummary {
     topSupplierName: row.top_supplier_name,
     topSupplierAmount: row.top_supplier_amount !== null ? Number(row.top_supplier_amount) : null,
     prevMonthTotalAmount: Number(row.prev_month_total_amount) || 0,
+    shippingAmount: Number(row.shipping_amount) || 0,
+    otherFeeAmount: Number(row.other_fee_amount) || 0,
   };
 }
 

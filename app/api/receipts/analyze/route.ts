@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { listActiveCategoryNames, PENDING_CATEGORY } from "@/lib/categories";
+import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -23,7 +24,13 @@ function checkRateLimit(userId: string): number | null {
   return null;
 }
 
-function buildReceiptSchema(categoryOptions: string[]) {
+const CHARGE_LINE_TYPES = ["shipping", "handling", "tax", "discount", "other_fee"] as const;
+const LINE_TYPES = ["inventory", ...CHARGE_LINE_TYPES] as const;
+
+function buildReceiptSchema(categoryOptionsInput: string[]) {
+  // 非庫存費用（運費等）沒有大分類可選，這裡額外加一個空字串選項給這類列使用；
+  // 庫存品項仍然只能從categoryOptionsInput（含待分類）裡面選，不會實際用到空字串。
+  const categoryOptions = [...categoryOptionsInput, ""];
   return {
     type: "object",
     additionalProperties: false,
@@ -38,9 +45,11 @@ function buildReceiptSchema(categoryOptions: string[]) {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["itemName", "quantity", "unit", "unitPrice", "totalPrice", "category"],
+          required: ["lineType", "itemName", "quantity", "unit", "unitPrice", "totalPrice", "category"],
           properties: {
-            itemName: { type: "string" },
+            // inventory：庫存品項；其餘5種是非庫存費用，不可建立庫存品項或增加庫存。
+            lineType: { type: "string", enum: [...LINE_TYPES] },
+            itemName: { type: "string", description: "品項名稱，若lineType不是inventory則填費用名稱（例如：運費）" },
             quantity: { type: "number" },
             unit: { type: "string" },
             unitPrice: { type: ["number", "null"] },
@@ -59,10 +68,11 @@ function demoResult() {
     supplier: "示範供應商",
     purchaseDate: new Date().toISOString().slice(0, 10),
     invoiceNumber: "DEMO-001",
-    totalAmount: 1240,
+    totalAmount: 1290,
     lines: [
-      { itemName: "抽取式衛生紙", quantity: 6, unit: "串", unitPrice: 120, totalPrice: 720, category: "客房備品" },
-      { itemName: "牛五花", quantity: 2, unit: "公斤", unitPrice: 260, totalPrice: 520, category: "晚餐食材" },
+      { lineType: "inventory", itemName: "抽取式衛生紙", quantity: 6, unit: "串", unitPrice: 120, totalPrice: 720, category: "客房備品" },
+      { lineType: "inventory", itemName: "牛五花", quantity: 2, unit: "公斤", unitPrice: 260, totalPrice: 520, category: "晚餐食材" },
+      { lineType: "shipping", itemName: "運費", quantity: 1, unit: "式", unitPrice: 50, totalPrice: 50, category: "" },
     ],
     warnings: ["這是示範辨識結果，正式使用時請設定OPENAI_API_KEY。"],
     demo: true,
@@ -92,13 +102,11 @@ export async function POST(request: Request) {
     if (!supabase) {
       return NextResponse.json({ error: "尚未設定Supabase，無法驗證登入狀態，暫停AI辨識。" }, { status: 503 });
     }
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ error: "請先登入才能使用AI辨識功能。" }, { status: 401 });
-    }
-    const retryAfterSeconds = checkRateLimit(user.id);
+    const session = await requireStaffSession(supabase);
+    if (!session.ok) return session.response;
+    const retryAfterSeconds = checkRateLimit(session.userId);
     if (retryAfterSeconds !== null) {
-      console.warn("Receipt analyze rate limited", user.id);
+      console.warn("Receipt analyze rate limited", session.userId);
       return NextResponse.json(
         { error: `操作過於頻繁，請於${retryAfterSeconds}秒後再試。` },
         { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
@@ -122,7 +130,11 @@ export async function POST(request: Request) {
         input: [{
           role: "user",
           content: [
-            { type: "input_text", text: `辨識這張民宿進貨單。這是逐字轉錄任務，不是內容重寫任務：品項名稱必須是單據上實際印出的文字，逐字照抄，禁止用「這類產品常見的名稱」去補全或替換看不清楚的字——例如單據寫「奶油」絕不能因為猜測而寫成「防油」，寫「工房」不能自行加上「廠」字。任何一個字看不清楚時，用「?」取代該字（例如「開元?工房奶油牛角」），並在warnings註明「品項名稱部分字元無法辨識」，絕對不要用聽起來合理的詞取代。特別留意容易誤認的字元（0與O、1與7、6與8、3與5、9與0）。每一列請用「數量×單價=金額」互相驗證，若三者對不起來，以單據上實際印刷或手寫的數字為準並在warnings註明可能有誤。分類欄位(category)只能從以下選項中選一個，優先從現有分類中選擇最符合的：${activeCategories.join("、") || "（目前尚無啟用中的分類）"}。如果實在無法判斷應歸屬哪個分類，請填「${PENDING_CATEGORY}」，不要自行發明新分類名稱。無法確認的資訊請留空並寫入warnings。` },
+            { type: "input_text", text: `辨識這張民宿進貨單。這是逐字轉錄任務，不是內容重寫任務：品項名稱必須是單據上實際印出的文字，逐字照抄，禁止用「這類產品常見的名稱」去補全或替換看不清楚的字——例如單據寫「奶油」絕不能因為猜測而寫成「防油」，寫「工房」不能自行加上「廠」字。任何一個字看不清楚時，用「?」取代該字（例如「開元?工房奶油牛角」），並在warnings註明「品項名稱部分字元無法辨識」，絕對不要用聽起來合理的詞取代。特別留意容易誤認的字元（0與O、1與7、6與8、3與5、9與0）。每一列請用「數量×單價=金額」互相驗證，若三者對不起來，以單據上實際印刷或手寫的數字為準並在warnings註明可能有誤。
+
+每一列都要判斷lineType：庫存品項填「inventory」；如果這一列的名稱包含「運費」「物流費」「宅配費」「配送費」「Freight」「Shipping」「Delivery fee」，一律判斷為「shipping」；包含「Handling fee」「包裝費」「手續費」判斷為「handling」；稅額（例如營業稅、稅金）判斷為「tax」；折扣、折讓、優惠減免判斷為「discount」；其他明顯不是實體商品的費用項目判斷為「other_fee」。這些非庫存費用絕對不可以判斷成inventory，也不會被建立成庫存品項。只要看到上述關鍵字就優先判斷為對應的非庫存費用類型，不要因為它也出現在品項清單裡就當成一般商品。
+
+分類欄位(category)只在lineType為inventory時才需要選擇，只能從以下選項中選一個，優先從現有分類中選擇最符合的：${activeCategories.join("、") || "（目前尚無啟用中的分類）"}。如果實在無法判斷應歸屬哪個分類，請填「${PENDING_CATEGORY}」，不要自行發明新分類名稱。lineType不是inventory時，category請填空字串。無法確認的資訊請留空並寫入warnings。` },
             { type: "input_image", image_url: `data:${body.mimeType};base64,${body.image}`, detail: "high" },
           ],
         }],

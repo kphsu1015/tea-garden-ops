@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { isAssignableStaffRole, mapStaffRow } from "@/lib/staff";
+import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -12,8 +13,8 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   const supabase = await createClient();
   if (!supabase) return NextResponse.json({ error: "尚未設定Supabase，無法修改員工。" }, { status: 503 });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "請先登入後再操作。" }, { status: 401 });
+  const session = await requireStaffSession(supabase);
+  if (!session.ok) return session.response;
 
   const { id } = await params;
   try {
@@ -21,7 +22,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
 
     // 防呆：is_active_staff()會檢查自己那筆staff_profiles是否active，一旦自己被停用，
     // 連讀取／修改staff_profiles（包含自己）的權限都會一起消失，變成沒有人能從畫面上重新啟用自己。
-    if (body.active === false && id === user.id) {
+    if (body.active === false && id === session.userId) {
       return NextResponse.json({ error: "無法停用自己的帳號（會導致自己無法再管理任何資料），請請其他管理員協助停用。" }, { status: 400 });
     }
 

@@ -1,11 +1,38 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { InventoryItem, UsagePeriod } from "@/lib/types";
+import type { InventoryItem, MovementType, UsagePeriod } from "@/lib/types";
+
+// 新增庫存異動：中文顯示用的異動類型對應到Postgres的movement_type enum（schema.sql）。
+export const MOVEMENT_TYPE_ENUM: Record<MovementType, string> = {
+  "採購入庫": "purchase_in",
+  "日常領用": "daily_use",
+  "客房補充": "room_supply",
+  "食材使用": "food_use",
+  "損壞": "damaged",
+  "過期報廢": "expired",
+  "盤點調整": "adjustment",
+};
+
+// 給異動歷史查詢頁用：從Postgres enum值反查中文顯示名稱。
+export const MOVEMENT_TYPE_LABELS: Record<string, MovementType> = Object.fromEntries(
+  Object.entries(MOVEMENT_TYPE_ENUM).map(([label, value]) => [value, label as MovementType]),
+);
+
+// 大部分異動類型的增減方向是固定的（採購入庫一定是增加，領用／損壞／報廢一定是減少），
+// 只有「盤點調整」允許使用者自己選方向。null代表要讓使用者自己選。
+export const MOVEMENT_TYPE_DEFAULT_DIRECTION: Record<MovementType, "increase" | "decrease" | null> = {
+  "採購入庫": "increase",
+  "日常領用": "decrease",
+  "客房補充": "decrease",
+  "食材使用": "decrease",
+  "損壞": "decrease",
+  "過期報廢": "decrease",
+  "盤點調整": null,
+};
 
 type InventoryItemRow = {
   id: string;
   name: string;
   category: string;
-  storage_location: string;
   base_unit: string;
   quantity: number;
   safety_stock: number;
@@ -18,14 +45,13 @@ type InventoryItemRow = {
   usage_period: string | null;
 };
 
-export const INVENTORY_SELECT_COLUMNS = "id,name,category,storage_location,base_unit,quantity,safety_stock,suggested_purchase,supplier,nearest_expiry_date,active,usage_forecast_enabled,estimated_usage,usage_period";
+export const INVENTORY_SELECT_COLUMNS = "id,name,category,base_unit,quantity,safety_stock,suggested_purchase,supplier,nearest_expiry_date,active,usage_forecast_enabled,estimated_usage,usage_period";
 
 export function mapInventoryRow(row: InventoryItemRow): InventoryItem {
   return {
     id: row.id,
     name: row.name,
     category: row.category,
-    location: row.storage_location,
     unit: row.base_unit,
     quantity: Number(row.quantity),
     safetyStock: Number(row.safety_stock),
@@ -57,10 +83,15 @@ export function buildUsageForecastColumns(input: { usageForecastEnabled?: boolea
   if (typeof input.estimatedUsage !== "number" || !Number.isFinite(input.estimatedUsage) || input.estimatedUsage <= 0) {
     return { error: "啟用預估使用量時，預估使用量必須大於0。" };
   }
+  // 預估使用量比照庫存數量一律整數，即使呼叫端傳了小數也在這裡四捨五入；四捨五入後若變成0視同未填寫。
+  const roundedUsage = Math.round(input.estimatedUsage);
+  if (roundedUsage <= 0) {
+    return { error: "啟用預估使用量時，預估使用量必須大於0。" };
+  }
   if (input.usagePeriod !== "daily" && input.usagePeriod !== "weekly" && input.usagePeriod !== "monthly") {
     return { error: "請選擇使用週期（每日／每週／每月）。" };
   }
-  return { columns: { usage_forecast_enabled: true, estimated_usage: input.estimatedUsage, usage_period: input.usagePeriod } };
+  return { columns: { usage_forecast_enabled: true, estimated_usage: roundedUsage, usage_period: input.usagePeriod } };
 }
 
 // --- 預估使用量／低庫存判斷（純函式，前後端共用） ---

@@ -2,13 +2,14 @@
 
 import {
   AlertTriangle, Archive, BarChart3, Bell, Box, ChevronRight, ClipboardCheck, ClipboardList,
-  Clock3, FileScan, LogOut, Menu, MessageSquareText, Pencil, Plus, Power, Search, Settings,
+  Clock3, Eye, EyeOff, FileScan, History, LogOut, Menu, MessageSquareText, Pencil, Plus, Power, Search, Settings,
   ShoppingCart, Trash2, Users, X
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { initialMovements, initialNotes, initialPurchases } from "@/lib/demo-data";
-import { estimatedRemainingLabel, getLowStockReason, lowStockReasonLabel, periodFrequencyLabel } from "@/lib/inventory";
-import { formatNumber, formatSignedNumber } from "@/lib/format";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { initialNotes, initialPurchases } from "@/lib/demo-data";
+import { estimatedRemainingLabel, getLowStockReason, lowStockReasonLabel, MOVEMENT_TYPE_DEFAULT_DIRECTION, MOVEMENT_TYPE_ENUM, periodFrequencyLabel } from "@/lib/inventory";
+import type { StockMovementRecord } from "@/lib/movements";
+import { formatNumber, formatSignedNumber, formatTaipeiDateLabel, getTaipeiHour, greetingForHour } from "@/lib/format";
 import { generateId } from "@/lib/id";
 import { staffRoleLabel } from "@/lib/staff";
 import { PurchaseReportView } from "@/components/purchase-report-view";
@@ -16,9 +17,9 @@ import { ReceiptScanner } from "@/components/receipt-scanner";
 import { SettingsView } from "@/components/settings-view";
 import { StaffView } from "@/components/staff-view";
 import { createClient } from "@/lib/supabase/client";
-import type { AssignableStaffRole, HandoverNote, InventoryCategory, InventoryItem, InventoryItemInput, MovementType, PurchaseRequest, PurchaseStatus, ReceiptRecord, StockMovement, UsagePeriod } from "@/lib/types";
+import type { AssignableStaffRole, HandoverNote, InventoryCategory, InventoryItem, InventoryItemInput, MovementType, PurchaseRequest, PurchaseStatus, ReceiptRecord, UsagePeriod } from "@/lib/types";
 
-type View = "dashboard" | "inventory" | "purchases" | "movements" | "receipts" | "report" | "notes" | "staff" | "settings";
+type View = "dashboard" | "inventory" | "purchases" | "receipts" | "movement-log" | "report" | "notes" | "staff" | "settings";
 type Modal = "purchase" | "movement" | "item" | "note" | null;
 
 const supabaseConfigured = Boolean(
@@ -69,30 +70,38 @@ function useSupabaseSession() {
 
 function useStaffRole(session: ReturnType<typeof useSupabaseSession>) {
   const [role, setRole] = useState<AssignableStaffRole | null>(null);
+  // checked：是否已經完成過一次「這個已登入帳號到底有沒有有效角色」的確認，
+  // 用來避免role還沒查完之前就誤判成「已確認無角色」而把使用者登出。
+  const [checked, setChecked] = useState(false);
+  const [displayName, setDisplayName] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     const timer = window.setTimeout(() => {
       if (!session.configured || session.status !== "authed" || !session.userId) {
-        if (active) setRole(null);
+        if (active) { setRole(null); setChecked(false); setDisplayName(null); }
         return;
       }
       const supabase = createClient();
-      supabase.from("staff_profiles").select("role,active").eq("id", session.userId as string).maybeSingle().then(({ data, error }) => {
+      supabase.from("staff_profiles").select("email,role,active,display_name").eq("id", session.userId as string).maybeSingle().then(({ data, error }) => {
         if (!active) return;
         // 讀不到自己的staff_profiles常見原因：這個帳號的active目前是false（is_active_staff()連自己的row都讀不到）。
         if (error) console.error("Load staff role failed", error);
-        // viewer已移除且會被停用，這裡只承認active且角色仍為admin／purchaser／housekeeper的帳號。
-        const validRole = data?.active && (data.role === "admin" || data.role === "purchaser" || data.role === "housekeeper")
+        // 前端這裡跟後端checkStaffSession用同一套規則：Email要跟目前登入的Email一致、active為true、
+        // 角色只能是admin／purchaser／housekeeper（viewer已移除且會被停用）。任何一項不符就視為無效。
+        const emailMatches = Boolean(data?.email && session.email && data.email.toLowerCase() === session.email.toLowerCase());
+        const validRole = data?.active && emailMatches && (data.role === "admin" || data.role === "purchaser" || data.role === "housekeeper")
           ? (data.role as AssignableStaffRole)
           : null;
         setRole(validRole);
+        setChecked(true);
+        setDisplayName(validRole ? (data?.display_name || null) : null);
       });
     }, 0);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [session.configured, session.status, session.userId]);
+  }, [session.configured, session.status, session.userId, session.email]);
 
-  return role;
+  return { role, checked, displayName, setDisplayName };
 }
 
 function useCategories() {
@@ -218,26 +227,37 @@ function useInventory() {
 
   const deleteItem = (id: string) => mutate(() => fetch(`/api/inventory/${id}`, { method: "DELETE" }));
 
-  // 盤點／修正庫存：透過record_stock_movement()交易函式寫入，quantity會是伺服器端的真實新值，
-  // mutate內建的refresh()結束後items會拿到正確數量，不需要再手動調整。
-  const countStock = (id: string, changeAmount: number, note?: string) => mutate(() => fetch(`/api/inventory/${id}/count`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ changeAmount, note }),
-  }));
-
-  // 庫存異動（庫存增減）尚未接上Supabase，這裡只做畫面上的即時反映，重新整理後會回到伺服器端的實際數量。
-  const adjustQuantityLocally = (name: string, delta: number) => {
-    setItems((prev) => prev.map((item) => item.name === name ? { ...item, quantity: Math.max(0, item.quantity + delta) } : item));
+  // 給「新增採購需求」在挑不到現有品項時直接建立新品項用：跟addItem用同一支API，
+  // 但這裡需要拿到剛建立品項的id（用來當這筆採購需求的inventoryItemId），所以另外寫一支、不影響addItem原本的呼叫端。
+  const createAndReturnItem = async (payload: InventoryItemInput): Promise<InventoryItem | string> => {
+    try {
+      const response = await fetch("/api/inventory", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+      });
+      const data = await response.json() as { item?: InventoryItem; error?: string };
+      if (!response.ok || !data.item) return data.error || "新增品項失敗，請稍後再試。";
+      await refresh();
+      return data.item;
+    } catch (reason) {
+      return reason instanceof Error ? reason.message : "新增品項失敗，請稍後再試。";
+    }
   };
 
-  return { items, loading, error, demo, addItem, updateItem, setItemActive, deleteItem, countStock, adjustQuantityLocally, refresh };
+  // 盤點／修正庫存、新增庫存異動：都透過record_stock_movement()交易函式寫入，quantity會是伺服器端的真實新值，
+  // mutate內建的refresh()結束後items會拿到正確數量，不需要再手動調整。
+  const countStock = (id: string, changeAmount: number, note?: string, movementType?: string) => mutate(() => fetch(`/api/inventory/${id}/count`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ changeAmount, note, movementType }),
+  }));
+
+  return { items, loading, error, demo, addItem, updateItem, setItemActive, deleteItem, countStock, refresh, createAndReturnItem };
 }
 
 const navItems: Array<{ id: View; label: string; icon: typeof Box }> = [
   { id: "dashboard", label: "總覽", icon: Box },
   { id: "inventory", label: "庫存管理", icon: Archive },
   { id: "purchases", label: "採購需求", icon: ShoppingCart },
-  { id: "movements", label: "入庫與異動", icon: ClipboardList },
-  { id: "receipts", label: "進貨單辨識", icon: FileScan },
+  { id: "receipts", label: "新增進貨單", icon: FileScan },
+  { id: "movement-log", label: "異動紀錄", icon: History },
   { id: "report", label: "進貨報表", icon: BarChart3 },
   { id: "notes", label: "交接留言", icon: MessageSquareText },
   { id: "staff", label: "員工管理", icon: Users },
@@ -270,24 +290,38 @@ function Pill({ children, tone = "sage" }: { children: React.ReactNode; tone?: "
 
 export function OperationsApp() {
   const session = useSupabaseSession();
-  const role = useStaffRole(session);
+  const roleState = useStaffRole(session);
+  const role = roleState.role;
   const [demoLoggedIn, setDemoLoggedIn] = useState(false);
+  const [rejected, setRejected] = useState(false);
   const [view, setView] = useState<View>("dashboard");
   const [mobileNav, setMobileNav] = useState(false);
   const [modal, setModal] = useState<Modal>(null);
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
   const [deletingItem, setDeletingItem] = useState<InventoryItem | null>(null);
   const [countingItem, setCountingItem] = useState<InventoryItem | null>(null);
+  const [movingItem, setMovingItem] = useState<InventoryItem | null>(null);
   const [deletingNote, setDeletingNote] = useState<HandoverNote | null>(null);
-  const [deletingMovement, setDeletingMovement] = useState<StockMovement | null>(null);
   const [query, setQuery] = useState("");
   const inventoryState = useInventory();
   const [purchases, setPurchases] = useStoredState("tea-purchases", initialPurchases);
-  const [movements, setMovements] = useStoredState("tea-movements", initialMovements);
   const [notes, setNotes] = useStoredState("tea-notes", initialNotes);
   const categoryState = useCategories();
   const [receipts, setReceipts] = useStoredState<ReceiptRecord[]>("tea-receipts", []);
   const [retentionDays, setRetentionDays] = useStoredState("tea-receipt-retention", 90);
+
+  // 即使Supabase Auth登入成功，只要不在白名單、被停用或角色無效，就立刻登出、拒絕進入系統，
+  // 不能只是把畫面上的按鈕都鎖住而已。
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (session.configured && session.status === "authed" && roleState.checked && roleState.role === null) {
+        setRejected(true);
+        session.signOut();
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.configured, session.status, roleState.checked, roleState.role]);
 
   const inventory = inventoryState.items;
   const activeInventory = useMemo(() => inventory.filter((item) => item.active), [inventory]);
@@ -311,25 +345,24 @@ export function OperationsApp() {
   const pending = purchases.filter((request) => !["已入庫", "暫緩"].includes(request.status));
 
   const openPurchaseModal = (initialItem?: string) => {
-    if (!activeInventory.length) { alert("目前沒有可採購的庫存品項，請先新增品項。"); return; }
+    // 沒有現有庫存品項也能開啟：現在「新增採購需求」本身就能順手建立新庫存品項，不用先跳去庫存頁新增。
     if (initialItem) setQuery(initialItem);
     setModal("purchase");
   };
-  const openMovementModal = () => {
-    if (!activeInventory.length) { alert("目前沒有可登記異動的庫存品項，請先新增品項。"); return; }
-    setModal("movement");
-  };
 
-  const isLoggedIn = session.configured ? session.status === "authed" : demoLoggedIn;
+  const isLoggedIn = session.configured
+    ? session.status === "authed" && roleState.checked && roleState.role !== null
+    : demoLoggedIn;
   if (session.configured && session.status === "loading") {
     return <main className="login-page"><div className="login-panel"><div className="login-card"><p>載入登入狀態中…</p></div></div></main>;
   }
-  if (!isLoggedIn) return <LoginScreen supabaseConfigured={session.configured} onDemoLogin={() => setDemoLoggedIn(true)} />;
+  if (session.configured && session.status === "authed" && (!roleState.checked || roleState.role === null)) {
+    return <main className="login-page"><div className="login-panel"><div className="login-card"><p>驗證員工身分中…</p></div></div></main>;
+  }
+  if (!isLoggedIn) return <LoginScreen supabaseConfigured={session.configured} onDemoLogin={() => setDemoLoggedIn(true)} unauthorized={rejected} />;
 
   const openView = (next: View) => { setView(next); setMobileNav(false); };
   const handleLogout = () => { if (session.configured) session.signOut(); else setDemoLoggedIn(false); };
-  const displayName = session.configured ? (session.email || "員工") : "管理員 Alan（示範）";
-  const avatarLetter = session.configured ? (session.email?.[0]?.toUpperCase() || "?") : "A";
 
   return (
     <div className="app-shell">
@@ -337,10 +370,10 @@ export function OperationsApp() {
         <div className="brand">
           <span className="brand-mark">茶</span>
           <div><strong>茶香花園民宿</strong><small>內部採購與庫存</small></div>
-          <button className="mobile-close" onClick={() => setMobileNav(false)} aria-label="關閉選單"><X size={20} /></button>
+          <button className="mobile-close" onClick={() => setMobileNav(false)} aria-label="關閉選單" title="關閉選單"><X size={20} /></button>
         </div>
         <nav>
-          {navItems.filter((item) => item.id !== "report" || canViewPurchaseReport).map((item) => {
+          {navItems.filter((item) => (item.id !== "report" || canViewPurchaseReport) && (item.id !== "staff" || role === "admin")).map((item) => {
             const Icon = item.icon;
             return <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => openView(item.id)}><Icon size={20} />{item.label}</button>;
           })}
@@ -354,9 +387,18 @@ export function OperationsApp() {
 
       <main className="main-area">
         <header className="topbar">
-          <button className="menu-button" onClick={() => setMobileNav(true)} aria-label="開啟選單"><Menu /></button>
+          <button className="menu-button" onClick={() => setMobileNav(true)} aria-label="開啟選單" title="開啟選單"><Menu /></button>
           <div className="page-title"><span>茶香花園民宿</span><strong>{view === "settings" ? "系統設定" : navItems.find((n) => n.id === view)?.label}</strong></div>
-          <div className="top-actions"><button className="icon-button"><Bell size={19} /><i>{lowStock.length}</i></button><div className="user-badge">{avatarLetter}</div><div className="user-copy"><strong>{displayName}</strong><small>{session.configured ? (role ? staffRoleLabel(role) : "尚未指派角色") : "管理員（示範）"}</small></div></div>
+          <div className="top-actions">
+            <NotificationBell lowStock={lowStock} onSelectItem={(item) => { openView("inventory"); setEditingItem(item); setModal("item"); }} />
+            <UserMenu
+              email={session.configured ? session.email : null}
+              displayName={session.configured ? roleState.displayName : null}
+              role={role}
+              demo={!session.configured}
+              onSaved={roleState.setDisplayName}
+            />
+          </div>
         </header>
 
         <section className="content">
@@ -377,26 +419,19 @@ export function OperationsApp() {
             onToggleActive={(item) => inventoryState.setItemActive(item.id, !item.active)}
             onDeleteItem={(item) => setDeletingItem(item)}
             onCountItem={(item) => setCountingItem(item)}
-            onMovement={openMovementModal}
+            onAddMovement={(item) => setMovingItem(item)}
             onPurchase={openPurchaseModal}
           />}
           {view === "purchases" && <PurchasesView requests={purchases} setRequests={setPurchases} onNew={() => openPurchaseModal()} />}
-          {view === "movements" && <MovementsView movements={movements} canManage={role === "admin"} onNew={openMovementModal} onDelete={(movement) => setDeletingMovement(movement)} />}
           {view === "receipts" && <ReceiptScanner inventory={activeInventory} categories={activeCategoryNames} receipts={receipts} retentionDays={retentionDays} onConfirm={async (record) => {
-            // 新品項建立、庫存數量與異動紀錄都已經在Supabase交易（RPC）內原子性完成，這裡只需要重新整理庫存，
-            // 並把「非忽略」的品項加進本地顯示用的異動紀錄清單。
+            // 新品項建立、庫存數量與異動紀錄都已經在Supabase交易（RPC）內原子性完成，這裡只需要重新整理庫存即可。
             await inventoryState.refresh();
-            const nextMovements = [...movements];
-            for (const line of record.lines) {
-              if (line.resolution === "ignore") continue;
-              nextMovements.unshift({ id: generateId(), itemName: line.itemName, type: "採購入庫", change: line.quantity, unit: line.unit, operator: displayName, createdAt: new Date().toLocaleString("zh-TW", { hour12: false }), note: `進貨單：${record.fileName}${record.invoiceNumber ? `／${record.invoiceNumber}` : ""}` });
-            }
-            setMovements(nextMovements);
             setReceipts([record, ...receipts]);
           }} />}
+          {view === "movement-log" && <MovementLogView inventory={inventory} />}
           {view === "report" && <PurchaseReportView canView={canViewPurchaseReport} canManage={role === "admin"} />}
           {view === "notes" && <NotesView notes={notes} canManage={role === "admin"} onNew={() => setModal("note")} onDelete={(note) => setDeletingNote(note)} />}
-          {view === "staff" && <StaffView canManage={role === "admin"} currentUserId={session.userId} />}
+          {view === "staff" && <StaffView canView={role === "admin"} canManage={role === "admin"} currentUserId={session.userId} />}
           {view === "settings" && <SettingsView
             categories={categoryState.categories}
             categoriesLoading={categoryState.loading}
@@ -413,12 +448,7 @@ export function OperationsApp() {
         </section>
       </main>
 
-      {modal === "purchase" && <PurchaseModal inventory={activeInventory} initialItem={query} onClose={() => setModal(null)} onSave={(request) => { setPurchases([request, ...purchases]); setModal(null); setQuery(""); }} />}
-      {modal === "movement" && <MovementModal inventory={activeInventory} onClose={() => setModal(null)} onSave={(movement) => {
-        setMovements([movement, ...movements]);
-        inventoryState.adjustQuantityLocally(movement.itemName, movement.change);
-        setModal(null);
-      }} />}
+      {modal === "purchase" && <PurchaseModal inventory={activeInventory} categories={activeCategoryNames} initialItem={query} onClose={() => setModal(null)} onSave={(request) => { setPurchases([request, ...purchases]); setModal(null); setQuery(""); }} onCreateItem={inventoryState.createAndReturnItem} />}
       {modal === "item" && <ItemModal
         categories={itemFormCategoryOptions}
         item={editingItem}
@@ -440,37 +470,135 @@ export function OperationsApp() {
       {countingItem && <StockCountModal
         item={countingItem}
         onClose={() => setCountingItem(null)}
-        onConfirm={async (changeAmount, note) => {
-          const error = await inventoryState.countStock(countingItem.id, changeAmount, note);
-          if (!error) {
-            setMovements([{ id: generateId(), itemName: countingItem.name, type: "盤點調整", change: changeAmount, unit: countingItem.unit, operator: displayName, createdAt: new Date().toLocaleString("zh-TW", { hour12: false }), note: note || "盤點修正" }, ...movements]);
-          }
-          return error;
-        }}
+        onConfirm={(changeAmount, note) => inventoryState.countStock(countingItem.id, changeAmount, note)}
+      />}
+      {movingItem && <MovementEntryModal
+        item={movingItem}
+        onClose={() => setMovingItem(null)}
+        onConfirm={(movementType, changeAmount, note) => inventoryState.countStock(movingItem.id, changeAmount, note, movementType)}
       />}
       {deletingNote && <ConfirmDeleteNoteModal
         note={deletingNote}
         onClose={() => setDeletingNote(null)}
         onConfirm={() => setNotes(notes.filter((n) => n.id !== deletingNote.id))}
       />}
-      {deletingMovement && <ConfirmDeleteMovementModal
-        movement={deletingMovement}
-        onClose={() => setDeletingMovement(null)}
-        onConfirm={() => setMovements(movements.filter((m) => m.id !== deletingMovement.id))}
-      />}
     </div>
   );
 }
 
-function LoginScreen({ supabaseConfigured, onDemoLogin }: { supabaseConfigured: boolean; onDemoLogin: () => void }) {
+function LoginScreen({ supabaseConfigured, onDemoLogin, unauthorized }: { supabaseConfigured: boolean; onDemoLogin: () => void; unauthorized: boolean }) {
+  const [view, setView] = useState<"password" | "reset" | "magiclink">("password");
+  const [demoEmail, setDemoEmail] = useState("");
+
+  const redirectMessage = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const code = new URLSearchParams(window.location.search).get("auth_error");
+    if (code === "unauthorized") return "此帳號尚未獲授權或已停用，請聯絡管理員。";
+    if (code) return "登入連結已失效或不正確，請重新操作。";
+    return null;
+  }, []);
+
+  return <main className="login-page">
+    <div className="login-art"><div className="mountains" /><div className="login-message"><span>ALISHAN · TEA GARDEN</span><h1>讓每一次補貨，<br />都比缺貨早一步。</h1><p>民宿備品、早餐、晚餐食材與交接事項，一個地方清楚掌握。</p></div></div>
+    <div className="login-panel"><div className="login-card">
+      <div className="login-logo">茶</div><h2>內部管理系統</h2><p>僅限茶香花園民宿工作人員使用</p>
+      {(unauthorized || redirectMessage) && <div className="error-box">{redirectMessage || "此帳號尚未獲授權或已停用，請聯絡管理員。"}</div>}
+      {!supabaseConfigured ? <>
+        <label>員工Email<input value={demoEmail} onChange={(e) => setDemoEmail(e.target.value)} type="email" /></label>
+        <button className="primary-button" onClick={onDemoLogin}>使用示範模式登入<ChevronRight size={18} /></button>
+        <div className="login-note">尚未設定Supabase，目前為離線示範模式</div>
+      </> : view === "magiclink" ? <MagicLinkCard onBack={() => setView("password")} />
+        : view === "reset" ? <ResetRequestCard onBack={() => setView("password")} />
+        : <PasswordLoginCard
+            onForgot={() => setView("reset")}
+            onMagicLink={() => setView("magiclink")}
+          />}
+    </div></div>
+  </main>;
+}
+
+function PasswordLoginCard({ onForgot, onMagicLink }: { onForgot: () => void; onMagicLink: () => void }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError("");
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error || "登入失敗");
+      // 刻意用整頁重新導向（不是client router），讓所有session相關的hook用新的cookie重新初始化。
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+      window.location.href = "/";
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "登入失敗，請稍後再試。");
+      setSubmitting(false);
+    }
+  };
+
+  return <form onSubmit={submit}>
+    <label>員工Email<input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@teagarden.local" autoComplete="username" /></label>
+    <label>密碼
+      <div className="password-field">
+        <input required type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+        <button type="button" aria-label={showPassword ? "隱藏密碼" : "顯示密碼"} title={showPassword ? "隱藏密碼" : "顯示密碼"} onClick={() => setShowPassword(!showPassword)}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button>
+      </div>
+    </label>
+    {error && <div className="error-box">{error}</div>}
+    <button className="primary-button" disabled={submitting}>{submitting ? "登入中…" : "登入"}<ChevronRight size={18} /></button>
+    <div className="login-links">
+      <button type="button" className="text-button" onClick={onForgot}>忘記密碼？</button>
+    </div>
+    <button type="button" className="login-secondary-link" onClick={onMagicLink}>使用Email登入連結</button>
+  </form>;
+}
+
+function ResetRequestCard({ onBack }: { onBack: () => void }) {
+  const [email, setEmail] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState("");
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      const data = await response.json() as { message?: string };
+      setMessage(data.message || "如果此Email已獲授權，系統將寄送密碼設定或重設信。");
+    } catch {
+      setMessage("如果此Email已獲授權，系統將寄送密碼設定或重設信。");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return <form onSubmit={submit}>
+    <p className="login-note">輸入你的員工Email：如果是第一次登入，會寄送設定密碼的連結；如果已經有密碼，會寄送密碼重設連結。是否已獲授權不會在畫面上顯示。</p>
+    <label>員工Email<input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@teagarden.local" /></label>
+    {message ? <div className="setting-note">{message}</div> : <button className="primary-button" disabled={submitting}>{submitting ? "寄送中…" : "寄送密碼設定／重設信"}<ChevronRight size={18} /></button>}
+    <button type="button" className="text-button" onClick={onBack}>返回登入</button>
+  </form>;
+}
+
+function MagicLinkCard({ onBack }: { onBack: () => void }) {
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
-  const redirectError = useMemo(() => {
-    if (typeof window === "undefined") return false;
-    return new URLSearchParams(window.location.search).get("auth_error") === "1";
-  }, []);
 
   const sendMagicLink = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -480,9 +608,10 @@ function LoginScreen({ supabaseConfigured, onDemoLogin }: { supabaseConfigured: 
     setError("");
     try {
       const supabase = createClient();
+      // shouldCreateUser: false — 這是公開的備用登入入口，不可以讓任何人靠輸入Email就自動建立新帳號。
       const { error: authError } = await supabase.auth.signInWithOtp({
         email: value,
-        options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
+        options: { shouldCreateUser: false, emailRedirectTo: `${window.location.origin}/auth/callback` },
       });
       if (authError) throw authError;
       setSent(true);
@@ -493,27 +622,119 @@ function LoginScreen({ supabaseConfigured, onDemoLogin }: { supabaseConfigured: 
     }
   };
 
-  return <main className="login-page">
-    <div className="login-art"><div className="mountains" /><div className="login-message"><span>ALISHAN · TEA GARDEN</span><h1>讓每一次補貨，<br />都比缺貨早一步。</h1><p>民宿備品、早餐、晚餐食材與交接事項，一個地方清楚掌握。</p></div></div>
-    <div className="login-panel"><div className="login-card">
-      <div className="login-logo">茶</div><h2>內部管理系統</h2><p>僅限茶香花園民宿工作人員使用</p>
-      {supabaseConfigured ? (sent ? <div className="setting-note">已寄出登入連結到 {email}，請至信箱點擊連結完成登入。</div> : <form onSubmit={sendMagicLink}>
-        <label>員工Email<input required value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="you@teagarden.local" /></label>
-        {(error || redirectError) && <div className="error-box">{error || "登入連結已失效或不正確，請重新索取。"}</div>}
-        <button className="primary-button" disabled={sending}>{sending ? "寄送中…" : "寄送登入連結"}<ChevronRight size={18} /></button>
-        <div className="login-note">系統會寄送一次性登入連結到你的Email，僅限已加入員工名單（staff_profiles）的帳號可登入。</div>
-      </form>) : <>
-        <label>員工Email<input value={email} onChange={(e) => setEmail(e.target.value)} type="email" /></label>
-        <button className="primary-button" onClick={onDemoLogin}>使用示範模式登入<ChevronRight size={18} /></button>
-        <div className="login-note">尚未設定Supabase，目前為離線示範模式</div>
-      </>}
-    </div></div>
-  </main>;
+  if (sent) return <div className="setting-note">已寄出登入連結到 {email}，請至信箱點擊連結完成登入。</div>;
+
+  return <form onSubmit={sendMagicLink}>
+    <p className="login-note">管理員備用登入方式，僅建議緊急情況使用；一樣需要通過白名單與啟用狀態檢查。</p>
+    <label>員工Email<input required value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="you@teagarden.local" /></label>
+    {error && <div className="error-box">{error}</div>}
+    <button className="primary-button" disabled={sending}>{sending ? "寄送中…" : "寄送登入連結"}<ChevronRight size={18} /></button>
+    <button type="button" className="text-button" onClick={onBack}>返回Email密碼登入</button>
+  </form>;
+}
+
+function NotificationBell({ lowStock, onSelectItem }: { lowStock: InventoryItem[]; onSelectItem: (item: InventoryItem) => void }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [open]);
+
+  return <div className="notif-wrap" ref={wrapRef}>
+    <button className="icon-button" aria-label="通知" title="通知" onClick={() => setOpen((v) => !v)}><Bell size={19} /><i>{lowStock.length}</i></button>
+    {open && <div className="notif-dropdown">
+      <header>低庫存提醒（{lowStock.length}）</header>
+      {lowStock.length === 0 ? <p className="notif-empty">目前沒有低庫存品項。</p> : <div className="notif-list">{lowStock.map((item) => {
+        const reason = getLowStockReason(item);
+        return <button type="button" key={item.id} onClick={() => onSelectItem(item)}>
+          <span><strong>{item.name}</strong><small>{reason ? lowStockReasonLabel(reason) : ""}</small></span>
+          <b>{formatNumber(item.quantity)}{item.unit}</b>
+        </button>;
+      })}</div>}
+    </div>}
+  </div>;
+}
+
+// 有暱稱（staff_profiles.display_name）就顯示暱稱，沒有暱稱才顯示帳號Email；點擊可以打開小面板修改暱稱。
+function UserMenu({ email, displayName, role, demo, onSaved }: {
+  email: string | null;
+  displayName: string | null;
+  role: AssignableStaffRole | null;
+  demo: boolean;
+  onSaved: (name: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(displayName || "");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) { setOpen(false); setEditing(false); setError(""); }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [open]);
+
+  const shownName = demo ? "管理員 Alan（示範）" : (displayName || email || "員工");
+  const avatarLetter = (demo ? "A" : (displayName || email || "?")[0]?.toUpperCase()) || "?";
+  const roleLabel = demo ? "管理員（示範）" : (role ? staffRoleLabel(role) : "尚未指派角色");
+
+  const startEditing = () => { setName(displayName || ""); setError(""); setEditing(true); };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const value = name.trim();
+    if (!value) { setError("請輸入暱稱。"); return; }
+    setSubmitting(true);
+    setError("");
+    try {
+      const response = await fetch("/api/staff/me", {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ displayName: value }),
+      });
+      const data = await response.json() as { error?: string; staff?: { displayName: string } };
+      if (!response.ok) throw new Error(data.error || "修改暱稱失敗");
+      onSaved(data.staff?.displayName || value);
+      setEditing(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "修改暱稱失敗，請稍後再試。");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return <div className="notif-wrap" ref={wrapRef}>
+    <button type="button" className="user-trigger" onClick={() => setOpen((v) => !v)}>
+      <div className="user-badge">{avatarLetter}</div>
+      <div className="user-copy"><strong>{shownName}</strong><small>{roleLabel}</small></div>
+    </button>
+    {open && <div className="notif-dropdown profile-dropdown">
+      {demo ? <p className="notif-empty">示範模式無法修改暱稱。</p> : editing ? <form onSubmit={submit} className="profile-edit-form">
+        <label>暱稱<input required maxLength={50} value={name} onChange={(e) => setName(e.target.value)} autoFocus /></label>
+        {error && <div className="error-box">{error}</div>}
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setEditing(false)}>取消</button><button className="primary-button" disabled={submitting}>{submitting ? "儲存中…" : "儲存"}</button></div>
+      </form> : <div className="profile-view">
+        <div><small>帳號</small><strong>{email || "—"}</strong></div>
+        <button type="button" className="secondary-button" onClick={startEditing}>修改暱稱</button>
+      </div>}
+    </div>}
+  </div>;
 }
 
 function Dashboard({ lowStock, pending, expiring, notes, onView, onPurchase }: { lowStock: InventoryItem[]; pending: PurchaseRequest[]; expiring: InventoryItem[]; notes: HandoverNote[]; onView: (v: View) => void; onPurchase: () => void }) {
+  const now = new Date();
+  const greeting = greetingForHour(getTaipeiHour(now));
   return <>
-    <div className="hero-row"><div><p>2026年9月18日 · 星期五</p><h1>早安，今天有 <em>{lowStock.length}</em> 項庫存需要注意</h1></div><button className="primary-button" onClick={onPurchase}><Plus size={19} />新增採購需求</button></div>
+    <div className="hero-row"><div><p>{formatTaipeiDateLabel(now)}</p><h1>{greeting}，今天有 <em>{lowStock.length}</em> 項庫存需要注意</h1></div><button className="primary-button" onClick={onPurchase}><Plus size={19} />新增採購需求</button></div>
     <div className="stat-grid">
       <Stat icon={AlertTriangle} label="低庫存" value={lowStock.length} tone="red" onClick={() => onView("inventory")} />
       <Stat icon={ShoppingCart} label="待處理採購" value={pending.length} tone="sage" onClick={() => onView("purchases")} />
@@ -522,7 +743,7 @@ function Dashboard({ lowStock, pending, expiring, notes, onView, onPurchase }: {
     </div>
     <div className="dashboard-grid">
       <Panel title="低庫存品項" icon={Box} action="查看全部" onAction={() => onView("inventory")}>
-        <div className="compact-list">{lowStock.slice(0, 5).map((item) => <div key={item.id}><span className="item-avatar">{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{item.location}</small></div><b>{formatNumber(item.quantity)}{item.unit}</b><span>安全 {formatNumber(item.safetyStock)}{item.unit}</span></div>)}</div>
+        <div className="compact-list">{lowStock.slice(0, 5).map((item) => <div key={item.id}><span className="item-avatar">{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{item.category}</small></div><b>{formatNumber(item.quantity)}{item.unit}</b><span>安全 {formatNumber(item.safetyStock)}{item.unit}</span></div>)}</div>
       </Panel>
       <Panel title="待處理採購" icon={ShoppingCart} action="管理採購" onAction={() => onView("purchases")}>
         <div className="compact-list">{pending.slice(0, 5).map((r) => <div key={r.id}><span className="item-avatar">購</span><div><strong>{r.itemName}</strong><small>{r.requester} · {r.requestedAt.slice(5, 10)}</small></div><b>{r.quantity}{r.unit}</b><Status status={r.status} /></div>)}</div>
@@ -549,7 +770,7 @@ function PageHeader({ title, subtitle, button, onClick }: { title: string; subti
   return <div className="section-header"><div><h1>{title}</h1><p>{subtitle}</p></div>{button && <button className="primary-button" onClick={onClick}><Plus size={18} />{button}</button>}</div>;
 }
 
-function InventoryView({ items, loading, error, demo, categories, query, setQuery, canManage, canReactivateOrDelete, canCount, onAddItem, onEditItem, onToggleActive, onDeleteItem, onCountItem, onMovement, onPurchase }: {
+function InventoryView({ items, loading, error, demo, categories, query, setQuery, canManage, canReactivateOrDelete, canCount, onAddItem, onEditItem, onToggleActive, onDeleteItem, onCountItem, onAddMovement, onPurchase }: {
   items: InventoryItem[];
   loading: boolean;
   error: string;
@@ -565,47 +786,106 @@ function InventoryView({ items, loading, error, demo, categories, query, setQuer
   onToggleActive: (item: InventoryItem) => void;
   onDeleteItem: (item: InventoryItem) => void;
   onCountItem: (item: InventoryItem) => void;
-  onMovement: () => void;
+  onAddMovement: (item: InventoryItem) => void;
   onPurchase: (name: string) => void;
 }) {
   const [category, setCategory] = useState("全部");
   const [showInactive, setShowInactive] = useState(false);
   const visible = showInactive ? items : items.filter((item) => item.active);
   const filtered = visible.filter((item) => (category === "全部" || item.category === category) && item.name.includes(query));
-  return <><div className="section-header"><div><h1>庫存管理</h1><p>掌握各區備品與食材數量，低於安全庫存或預估用量不足時立即提醒。</p></div><div className="header-actions"><button className="secondary-button" onClick={onMovement}>新增庫存異動</button><button className="primary-button" onClick={onAddItem} disabled={!canManage}><Plus size={18} />新增品項</button></div></div>
+  return <><div className="section-header"><div><h1>庫存管理</h1><p>掌握各區備品與食材數量，低於安全庫存或預估用量不足時立即提醒。</p></div><div className="header-actions"><button className="primary-button" onClick={onAddItem} disabled={!canManage}><Plus size={18} />新增品項</button></div></div>
     {demo && <div className="warning-box"><span>• 尚未設定Supabase，目前僅顯示唯讀示範庫存，無法新增／編輯／停用／刪除／盤點。</span></div>}
     {error && <div className="error-box">{error}</div>}
     <div className="toolbar"><div className="search-box"><Search size={18} /><input placeholder="搜尋品項" value={query} onChange={(e) => setQuery(e.target.value)} /></div><select value={category} onChange={(e) => setCategory(e.target.value)}><option>全部</option>{categories.map((name) => <option key={name}>{name}</option>)}</select><label className="check-label inline-check"><input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />顯示停用品項</label></div>
-    {loading ? <p>載入庫存中…</p> : <div className="table-card"><table><thead><tr><th>品項</th><th>分類／位置</th><th>目前庫存</th><th>安全庫存</th><th>預估使用</th><th>有效期限</th><th>狀態</th><th>低庫存原因</th><th>操作</th></tr></thead><tbody>{filtered.map((item) => {
+    {loading ? <p>載入庫存中…</p> : <div className="table-card"><table><thead><tr><th>品項</th><th>分類</th><th>目前庫存</th><th>安全庫存</th><th>預估使用</th><th>有效期限</th><th>狀態</th><th>低庫存原因</th><th>操作</th></tr></thead><tbody>{filtered.map((item) => {
       const reason = getLowStockReason(item);
       const remaining = estimatedRemainingLabel(item);
       return <tr key={item.id} className={item.active ? "" : "inventory-row-inactive"}>
         <td><strong>{item.name}</strong><small>{item.supplier || "未設定供應商"}</small></td>
-        <td>{item.category}<small>{item.location}</small></td>
+        <td>{item.category}</td>
         <td><b className={reason ? "danger-text" : ""}>{formatNumber(item.quantity)} {item.unit}</b></td>
         <td>{formatNumber(item.safetyStock)} {item.unit}</td>
         <td>{item.usageForecastEnabled && item.estimatedUsage && item.usagePeriod ? <><strong>{periodFrequencyLabel(item.usagePeriod)}{formatNumber(item.estimatedUsage)}{item.unit}</strong><small>{remaining}</small></> : <small>未啟用</small>}</td>
         <td>{item.expiryDate || "—"}</td>
         <td>{!item.active ? <Pill tone="red">已停用</Pill> : reason ? <Pill tone="red">低庫存</Pill> : <Pill>充足</Pill>}</td>
         <td>{reason ? <small className="danger-text">{lowStockReasonLabel(reason)}</small> : "—"}</td>
-        <td><div className="row-actions">{item.active && <button className="text-button" onClick={() => onPurchase(item.name)}>提出採購</button>}<button aria-label={`盤點${item.name}`} disabled={!canCount} onClick={() => onCountItem(item)}><ClipboardCheck size={15} /></button><button aria-label={`編輯${item.name}`} disabled={!canManage} onClick={() => onEditItem(item)}><Pencil size={15} /></button><button aria-label={item.active ? `停用${item.name}` : `啟用${item.name}`} disabled={item.active ? !canManage : !canReactivateOrDelete} onClick={() => onToggleActive(item)}><Power size={15} /></button><button className="danger" aria-label={`刪除${item.name}`} disabled={!canReactivateOrDelete} onClick={() => onDeleteItem(item)}><Trash2 size={15} /></button></div></td>
+        <td><div className="row-actions">{item.active && <button className="text-button" onClick={() => onPurchase(item.name)}>提出採購</button>}<button aria-label={`盤點${item.name}`} title={`盤點${item.name}`} disabled={!canCount} onClick={() => onCountItem(item)}><ClipboardCheck size={15} /></button><button aria-label={`新增${item.name}異動`} title={`新增${item.name}異動`} disabled={!canCount} onClick={() => onAddMovement(item)}><ClipboardList size={15} /></button><button aria-label={`編輯${item.name}`} title={`編輯${item.name}`} disabled={!canManage} onClick={() => onEditItem(item)}><Pencil size={15} /></button><button aria-label={item.active ? `停用${item.name}` : `啟用${item.name}`} title={item.active ? `停用${item.name}` : `啟用${item.name}`} disabled={item.active ? !canManage : !canReactivateOrDelete} onClick={() => onToggleActive(item)}><Power size={15} /></button><button className="danger" aria-label={`刪除${item.name}`} title={`刪除${item.name}`} disabled={!canReactivateOrDelete} onClick={() => onDeleteItem(item)}><Trash2 size={15} /></button></div></td>
       </tr>;
     })}</tbody></table></div>}
   </>;
 }
 
-function PurchasesView({ requests, setRequests, onNew }: { requests: PurchaseRequest[]; setRequests: (r: PurchaseRequest[]) => void; onNew: () => void }) {
-  const advance = (request: PurchaseRequest) => { const index = statusSteps.indexOf(request.status); if (index < 0 || index >= statusSteps.length - 1) return; setRequests(requests.map((r) => r.id === request.id ? { ...r, status: statusSteps[index + 1] } : r)); };
-  return <><PageHeader title="採購需求" subtitle="從提出、訂購到入庫，清楚追蹤每一項採購。" button="新增採購需求" onClick={onNew} />
-    <div className="purchase-board">{statusSteps.slice(0, -1).map((status) => <section key={status} className="purchase-column"><header><span>{status}</span><b>{requests.filter((r) => r.status === status).length}</b></header>{requests.filter((r) => r.status === status).map((r) => <article key={r.id} className="purchase-card"><div><strong>{r.itemName}</strong>{r.priority === "急件" && <Pill tone="red">急件</Pill>}</div><h3>{r.quantity} {r.unit}</h3><p>{r.note || "沒有補充說明"}</p><small>{r.requester} · {r.requestedAt}</small><button onClick={() => advance(r)}>{status === "已到貨" ? "確認入庫" : "前往下一階段"}<ChevronRight size={15} /></button></article>)}</section>)}</div>
+function PurchasesView({ requests, setRequests, onNew }: {
+  requests: PurchaseRequest[];
+  setRequests: (r: PurchaseRequest[]) => void;
+  onNew: () => void;
+}) {
+  // 「採購需求」只是提醒／追蹤用的看板，不會直接增加庫存。「已到貨」是最後一步，只能標記已處理（純狀態文字），
+  // 實際入庫一律要另外到「新增進貨單」建立進貨單，才會真正呼叫record_stock_movement增加庫存。
+  const advance = (request: PurchaseRequest) => {
+    const index = statusSteps.indexOf(request.status);
+    if (index < 0 || index >= statusSteps.length - 1) return;
+    setRequests(requests.map((r) => r.id === request.id ? { ...r, status: statusSteps[index + 1] } : r));
+  };
+
+  return <><PageHeader title="採購需求" subtitle="從提出、訂購到到貨，清楚追蹤每一項採購；實際入庫請另外到「新增進貨單」建立進貨單。" button="新增採購需求" onClick={onNew} />
+    <div className="purchase-board">{statusSteps.slice(0, -1).map((status) => <section key={status} className="purchase-column"><header><span>{status}</span><b>{requests.filter((r) => r.status === status).length}</b></header><div className="purchase-column-list">{requests.filter((r) => r.status === status).map((r) => <article key={r.id} className="purchase-card">
+      <div><strong>{r.itemName}</strong><span className="purchase-card-qty">{r.quantity} {r.unit}</span>{r.priority === "急件" && <Pill tone="red">急件</Pill>}</div>
+      {r.note && <p>{r.note}</p>}
+      <small>{r.requester} · {r.requestedAt}</small>
+      {status === "已到貨" && <div className="error-box">• 這裡只是提醒，不會自動增加庫存。請到「新增進貨單」輸入進貨單，庫存才會真正更新。</div>}
+      <button onClick={() => advance(r)}>{status === "已到貨" ? "標記已處理" : "前往下一階段"}<ChevronRight size={15} /></button>
+    </article>)}</div></section>)}</div>
   </>;
 }
 
-function MovementsView({ movements, canManage, onNew, onDelete }: { movements: StockMovement[]; canManage: boolean; onNew: () => void; onDelete: (movement: StockMovement) => void }) {
-  return <><PageHeader title="入庫與異動紀錄" subtitle="所有增加、領用、報廢與盤點調整都保留紀錄。" button="新增庫存異動" onClick={onNew} />
-    <div className="table-card"><table><thead><tr><th>時間</th><th>品項</th><th>異動類型</th><th>數量</th><th>操作人</th><th>備註</th>{canManage && <th>操作</th>}</tr></thead><tbody>{movements.map((m) => <tr key={m.id}><td>{m.createdAt}</td><td><strong>{m.itemName}</strong></td><td>{m.type}</td><td><b className={m.change > 0 ? "positive-text" : "danger-text"}>{formatSignedNumber(m.change)} {m.unit}</b></td><td>{m.operator}</td><td>{m.note || "—"}</td>{canManage && <td><div className="row-actions"><button className="danger" aria-label="刪除這筆異動紀錄" onClick={() => onDelete(m)}><Trash2 size={15} /></button></div></td>}</tr>)}</tbody></table></div>
+// 異動歷史查詢：純讀取，資料來源是真實的stock_movements（新增進貨單、盤點、新增異動都會寫進同一張表）。
+function MovementLogView({ inventory }: { inventory: InventoryItem[] }) {
+  const [movements, setMovements] = useState<StockMovementRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [demo, setDemo] = useState(false);
+  const [itemId, setItemId] = useState("");
+  const [movementTypeLabel, setMovementTypeLabel] = useState<MovementType | "">("");
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const load = async () => {
+        setLoading(true);
+        setError("");
+        try {
+          const params = new URLSearchParams();
+          if (itemId) params.set("itemId", itemId);
+          if (movementTypeLabel) params.set("movementType", MOVEMENT_TYPE_ENUM[movementTypeLabel]);
+          const response = await fetch(`/api/inventory/movements?${params.toString()}`);
+          const data = await response.json() as { movements?: StockMovementRecord[]; demo?: boolean; error?: string };
+          if (!response.ok) throw new Error(data.error || "讀取異動紀錄失敗");
+          setMovements(data.movements || []);
+          setDemo(Boolean(data.demo));
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : "讀取異動紀錄失敗，請稍後再試。");
+        } finally {
+          setLoading(false);
+        }
+      };
+      load();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [itemId, movementTypeLabel]);
+
+  const movementTypeOptions = Object.keys(MOVEMENT_TYPE_ENUM) as MovementType[];
+
+  return <><PageHeader title="異動紀錄" subtitle="新增進貨單、盤點修正、新增異動，所有真正影響庫存數量的紀錄都會出現在這裡。" />
+    {demo && <div className="warning-box"><span>• 尚未設定Supabase，無法顯示異動紀錄。</span></div>}
+    <div className="toolbar">
+      <select value={itemId} onChange={(e) => setItemId(e.target.value)}><option value="">全部品項</option>{inventory.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+      <select value={movementTypeLabel} onChange={(e) => setMovementTypeLabel(e.target.value as MovementType | "")}><option value="">全部類型</option>{movementTypeOptions.map((t) => <option key={t}>{t}</option>)}</select>
+    </div>
+    {error && <div className="error-box">{error}</div>}
+    {loading ? <p>載入異動紀錄中…</p> : movements.length === 0 ? <div className="report-empty-state"><AlertTriangle size={28} /><strong>沒有符合條件的異動紀錄</strong><p>請調整篩選條件，或先到「庫存管理」新增異動／盤點。</p></div> : <div className="table-card"><table><thead><tr><th>時間</th><th>品項</th><th>異動類型</th><th>數量</th><th>操作人</th><th>備註</th></tr></thead><tbody>{movements.map((m) => <tr key={m.id}><td>{new Date(m.createdAt).toLocaleString("zh-TW")}</td><td><strong>{m.itemName}</strong></td><td>{m.movementType}</td><td><b className={m.quantityChange > 0 ? "positive-text" : "danger-text"}>{formatSignedNumber(m.quantityChange)} {m.unit}</b></td><td>{m.operatorName}</td><td>{m.note || "—"}</td></tr>)}</tbody></table></div>}
   </>;
 }
+
 
 function NotesView({ notes, canManage, onNew, onDelete }: { notes: HandoverNote[]; canManage: boolean; onNew: () => void; onDelete: (note: HandoverNote) => void }) {
   return <><PageHeader title="交接留言" subtitle="將客人需求、房務、設備與餐飲事項留在對的位置。" button="新增交接留言" onClick={onNew} /><div className="notes-page">{notes.map((note) => <article key={note.id}><header><Pill tone={note.important ? "red" : "sage"}>{note.category}</Pill>{note.important && <span className="important-label">重要</span>}{canManage && <button className="note-delete" aria-label="刪除留言" onClick={() => onDelete(note)}><Trash2 size={15} /></button>}</header><p>{note.content}</p><footer>{note.author}<span>{note.createdAt}</span></footer></article>)}</div></>;
@@ -618,20 +898,125 @@ function Status({ status }: { status: PurchaseStatus }) {
 }
 
 function ModalShell({ title, subtitle, onClose, children }: { title: string; subtitle: string; onClose: () => void; children: React.ReactNode }) {
-  return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><div className="modal"><header><div><h2>{title}</h2><p>{subtitle}</p></div><button onClick={onClose}><X /></button></header>{children}</div></div>;
+  return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><div className="modal"><header><div><h2>{title}</h2><p>{subtitle}</p></div><button aria-label="關閉" title="關閉" onClick={onClose}><X /></button></header>{children}</div></div>;
 }
 
-function PurchaseModal({ inventory, initialItem, onClose, onSave }: { inventory: InventoryItem[]; initialItem: string; onClose: () => void; onSave: (p: PurchaseRequest) => void }) {
+function PurchaseModal({ inventory, categories, initialItem, onClose, onSave, onCreateItem }: {
+  inventory: InventoryItem[];
+  categories: string[];
+  initialItem: string;
+  onClose: () => void;
+  onSave: (p: PurchaseRequest) => void;
+  onCreateItem: (payload: InventoryItemInput) => Promise<InventoryItem | string>;
+}) {
   const first = inventory.find((i) => i.name === initialItem) || inventory[0];
-  const [itemName, setItemName] = useState(first.name); const current = inventory.find((i) => i.name === itemName) || first;
-  const [quantity, setQuantity] = useState(current.suggestedPurchase); const [priority, setPriority] = useState<"一般" | "急件">("一般"); const [note, setNote] = useState("");
-  return <ModalShell title="新增採購需求" subtitle="提出後將進入待確認清單" onClose={onClose}><form onSubmit={(e) => { e.preventDefault(); onSave({ id: generateId(), itemName, quantity, unit: current.unit, priority, status: "待確認", requester: "Alan", requestedAt: new Date().toLocaleString("zh-TW", { hour12: false }), note }); }}><label>品項<select value={itemName} onChange={(e) => { setItemName(e.target.value); const next = inventory.find((i) => i.name === e.target.value); if (next) setQuantity(next.suggestedPurchase); }}>{inventory.map((i) => <option key={i.id}>{i.name}</option>)}</select></label><div className="form-grid"><label>採購數量<input type="number" min="1" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} /></label><label>急迫程度<select value={priority} onChange={(e) => setPriority(e.target.value as "一般" | "急件")}><option>一般</option><option>急件</option></select></label></div><div className="stock-hint">目前庫存：{formatNumber(current.quantity)}{current.unit}　安全庫存：{formatNumber(current.safetyStock)}{current.unit}</div><label>原因或備註<textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：明天有12位早餐客人" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button">送出採購需求</button></div></form></ModalShell>;
+  const [mode, setMode] = useState<"existing" | "new">(inventory.length > 0 ? "existing" : "new");
+  const [itemName, setItemName] = useState(first?.name ?? "");
+  const current = inventory.find((i) => i.name === itemName) || first;
+  const [quantity, setQuantity] = useState(current?.suggestedPurchase ?? 1);
+  const [priority, setPriority] = useState<"一般" | "急件">("一般");
+  const [note, setNote] = useState("");
+
+  const [newName, setNewName] = useState("");
+  const [newCategory, setNewCategory] = useState(categories[0] ?? "");
+  const [newUnit, setNewUnit] = useState("個");
+  const [newSafetyStock, setNewSafetyStock] = useState(0);
+
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+
+    if (mode === "existing") {
+      if (!current) { setError("請選擇品項。"); return; }
+      onSave({ id: generateId(), itemName: current.name, inventoryItemId: current.id, quantity, unit: current.unit, priority, status: "待確認", requester: "Alan", requestedAt: new Date().toLocaleString("zh-TW", { hour12: false }), note });
+      return;
+    }
+
+    if (!newName.trim()) { setError("請輸入品項名稱。"); return; }
+    if (!newCategory) { setError("請選擇大分類。"); return; }
+    if (!newUnit.trim()) { setError("請輸入計算單位。"); return; }
+    setSubmitting(true);
+    const result = await onCreateItem({
+      name: newName.trim(), category: newCategory, unit: newUnit.trim() || "個",
+      safetyStock: newSafetyStock, suggestedPurchase: quantity, usageForecastEnabled: false,
+    });
+    setSubmitting(false);
+    if (typeof result === "string") { setError(result); return; }
+    onSave({ id: generateId(), itemName: result.name, inventoryItemId: result.id, quantity, unit: result.unit, priority, status: "待確認", requester: "Alan", requestedAt: new Date().toLocaleString("zh-TW", { hour12: false }), note });
+  };
+
+  return <ModalShell title="新增採購需求" subtitle="提出後將進入待確認清單" onClose={onClose}><form onSubmit={submit}>
+    <div className="mode-toggle">
+      <button type="button" className={mode === "existing" ? "primary-button" : "secondary-button"} disabled={inventory.length === 0} onClick={() => setMode("existing")}>從現有庫存選擇</button>
+      <button type="button" className={mode === "new" ? "primary-button" : "secondary-button"} onClick={() => setMode("new")}>建立新庫存品項</button>
+    </div>
+
+    {mode === "existing" ? <>
+      {inventory.length === 0 ? <div className="warning-box"><span>• 目前沒有可選擇的庫存品項，請改用「建立新庫存品項」。</span></div> : <>
+        <label>品項<select value={itemName} onChange={(e) => { setItemName(e.target.value); const next = inventory.find((i) => i.name === e.target.value); if (next) setQuantity(next.suggestedPurchase); }}>{inventory.map((i) => <option key={i.id}>{i.name}</option>)}</select></label>
+        {current && <div className="stock-hint">目前庫存：{formatNumber(current.quantity)}{current.unit}　安全庫存：{formatNumber(current.safetyStock)}{current.unit}</div>}
+      </>}
+    </> : <>
+      {categories.length === 0 && <div className="warning-box"><span>• 目前沒有啟用中的分類，請先到「系統設定」新增或啟用分類。</span></div>}
+      <label>新品項名稱<input required value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="例如：客房瓶裝水" /></label>
+      <div className="form-grid">
+        <label>大分類<select required disabled={categories.length === 0} value={newCategory} onChange={(e) => setNewCategory(e.target.value)}><option value="">請選擇</option>{categories.map((c) => <option key={c}>{c}</option>)}</select></label>
+        <label>計算單位<input required value={newUnit} onChange={(e) => setNewUnit(e.target.value)} placeholder="包、瓶、公斤" /></label>
+      </div>
+      <label>安全庫存<input type="number" min="0" step="1" value={newSafetyStock} onChange={(e) => setNewSafetyStock(Math.round(Number(e.target.value)))} /></label>
+    </>}
+
+    <div className="form-grid"><label>採購數量<input type="number" min="1" step="1" value={quantity} onChange={(e) => setQuantity(Math.round(Number(e.target.value)))} /></label><label>急迫程度<select value={priority} onChange={(e) => setPriority(e.target.value as "一般" | "急件")}><option>一般</option><option>急件</option></select></label></div>
+    <label>原因或備註<textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：明天有12位早餐客人" /></label>
+    {error && <div className="error-box">{error}</div>}
+    <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={submitting}>{submitting ? "建立中…" : "送出採購需求"}</button></div>
+  </form></ModalShell>;
 }
 
-function MovementModal({ inventory, onClose, onSave }: { inventory: InventoryItem[]; onClose: () => void; onSave: (m: StockMovement) => void }) {
-  const [itemName, setItemName] = useState(inventory[0].name); const item = inventory.find((i) => i.name === itemName) || inventory[0]; const [type, setType] = useState<MovementType>("採購入庫"); const [amount, setAmount] = useState(1); const [note, setNote] = useState("");
-  const positive = type === "採購入庫" || (type === "盤點調整" && amount > 0);
-  return <ModalShell title="新增庫存異動" subtitle="異動會保留操作紀錄，不直接覆蓋原數量" onClose={onClose}><form onSubmit={(e) => { e.preventDefault(); const change = positive ? Math.abs(amount) : -Math.abs(amount); onSave({ id: generateId(), itemName, type, change, unit: item.unit, operator: "Alan", createdAt: new Date().toLocaleString("zh-TW", { hour12: false }), note }); }}><label>品項<select value={itemName} onChange={(e) => setItemName(e.target.value)}>{inventory.map((i) => <option key={i.id}>{i.name}</option>)}</select></label><div className="form-grid"><label>異動類型<select value={type} onChange={(e) => setType(e.target.value as MovementType)}><option>採購入庫</option><option>日常領用</option><option>客房補充</option><option>食材使用</option><option>損壞</option><option>過期報廢</option><option>盤點調整</option></select></label><label>數量（{item.unit}）<input type="number" min="1" value={amount} onChange={(e) => setAmount(Number(e.target.value))} /></label></div><div className="stock-hint">異動前庫存：{formatNumber(item.quantity)}{item.unit}</div><label>備註<textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="填寫用途或調整原因" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button">儲存異動</button></div></form></ModalShell>;
+const MOVEMENT_TYPES = Object.keys(MOVEMENT_TYPE_ENUM) as MovementType[];
+
+// 新增庫存異動：跟「盤點／修正庫存」一樣真的呼叫record_stock_movement，差別是這裡要選異動類型
+// （採購入庫／日常領用／客房補充／食材使用／損壞／過期報廢／盤點調整），盤點只單純比對系統與實際數量。
+function MovementEntryModal({ item, onClose, onConfirm }: {
+  item: InventoryItem;
+  onClose: () => void;
+  onConfirm: (movementType: string, changeAmount: number, note?: string) => Promise<string | void>;
+}) {
+  const [type, setType] = useState<MovementType>("採購入庫");
+  const [direction, setDirection] = useState<"increase" | "decrease">("increase");
+  const [amount, setAmount] = useState(1);
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const fixedDirection = MOVEMENT_TYPE_DEFAULT_DIRECTION[type];
+  const effectiveDirection = fixedDirection ?? direction;
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!(amount > 0)) { setError("數量必須大於0。"); return; }
+    setSubmitting(true);
+    setError("");
+    const changeAmount = effectiveDirection === "increase" ? Math.abs(amount) : -Math.abs(amount);
+    const saveError = await onConfirm(MOVEMENT_TYPE_ENUM[type], changeAmount, note.trim() || undefined);
+    setSubmitting(false);
+    if (saveError) setError(saveError); else onClose();
+  };
+
+  return <ModalShell title="新增庫存異動" subtitle={`品項：${item.name}`} onClose={onClose}><form onSubmit={submit}>
+    <div className="stock-hint">目前庫存：{formatNumber(item.quantity)} {item.unit}</div>
+    <label>異動類型<select value={type} onChange={(e) => setType(e.target.value as MovementType)}>{MOVEMENT_TYPES.map((t) => <option key={t}>{t}</option>)}</select></label>
+    <div className="form-grid">
+      <label>方向<select value={effectiveDirection} disabled={Boolean(fixedDirection)} onChange={(e) => setDirection(e.target.value as "increase" | "decrease")}><option value="increase">增加</option><option value="decrease">減少</option></select></label>
+      <label>數量（{item.unit}）<input type="number" min="1" step="1" value={amount} onChange={(e) => setAmount(Math.round(Number(e.target.value)))} /></label>
+    </div>
+    <label>備註（可不填）<textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="填寫用途或調整原因" /></label>
+    {error && <div className="error-box">{error}</div>}
+    <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={submitting}>{submitting ? "儲存中…" : "儲存異動"}</button></div>
+  </form></ModalShell>;
 }
 
 function ItemModal({ categories, item, onClose, onSave }: {
@@ -646,7 +1031,6 @@ function ItemModal({ categories, item, onClose, onSave }: {
   const [unit, setUnit] = useState(item?.unit ?? "個");
   const [safetyStock, setSafetyStock] = useState(item?.safetyStock ?? 0);
   const [suggestedPurchase, setSuggestedPurchase] = useState(item?.suggestedPurchase ?? 1);
-  const [location, setLocation] = useState(item?.location ?? "");
   const [supplier, setSupplier] = useState(item?.supplier ?? "");
   const [expiryDate, setExpiryDate] = useState(item?.expiryDate ?? "");
   const [usageForecastEnabled, setUsageForecastEnabled] = useState(item?.usageForecastEnabled ?? false);
@@ -667,7 +1051,6 @@ function ItemModal({ categories, item, onClose, onSave }: {
       unit: unit.trim() || "個",
       safetyStock,
       suggestedPurchase,
-      location: location.trim() || "待設定",
       supplier: supplier.trim() || undefined,
       expiryDate: expiryDate || undefined,
       usageForecastEnabled,
@@ -682,11 +1065,11 @@ function ItemModal({ categories, item, onClose, onSave }: {
     <label>品項名稱<input required value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：客房瓶裝水" /></label>
     {categories.length === 0 && <div className="warning-box"><span>• 目前沒有啟用中的分類，請先到「系統設定」新增或啟用分類。</span></div>}
     <div className="form-grid"><label>分類<select required disabled={categories.length === 0} value={category} onChange={(e) => setCategory(e.target.value)}>{categories.map((name) => <option key={name}>{name}</option>)}</select></label><label>計算單位<input required value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="包、瓶、公斤" /></label></div>
-    <div className="form-grid"><label>安全庫存<input type="number" min="0" step="0.01" value={safetyStock} onChange={(e) => setSafetyStock(Number(e.target.value))} /></label><label>建議採購量<input type="number" min="0" step="0.01" value={suggestedPurchase} onChange={(e) => setSuggestedPurchase(Number(e.target.value))} /></label></div>
-    <div className="form-grid"><label>存放位置<input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="例如：一樓備品室" /></label><label>供應商<input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="可稍後設定" /></label></div>
+    <div className="form-grid"><label>安全庫存<input type="number" min="0" step="1" value={safetyStock} onChange={(e) => setSafetyStock(Math.round(Number(e.target.value)))} /></label><label>建議採購量<input type="number" min="0" step="1" value={suggestedPurchase} onChange={(e) => setSuggestedPurchase(Math.round(Number(e.target.value)))} /></label></div>
+    <label>供應商<input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="可稍後設定" /></label>
     <label>保存期限（可不填）<input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} /></label>
     <label className="check-label"><input type="checkbox" checked={usageForecastEnabled} onChange={(e) => setUsageForecastEnabled(e.target.checked)} />啟用預估使用量</label>
-    {usageForecastEnabled && <div className="form-grid"><label>預估使用量（{unit || "單位"}）<input required type="number" min="0.01" step="0.01" value={estimatedUsage} onChange={(e) => setEstimatedUsage(Number(e.target.value))} /></label><label>使用週期<select value={usagePeriod} onChange={(e) => setUsagePeriod(e.target.value as UsagePeriod)}><option value="daily">每日</option><option value="weekly">每週</option><option value="monthly">每月</option></select></label></div>}
+    {usageForecastEnabled && <div className="form-grid"><label>預估使用量（{unit || "單位"}）<input required type="number" min="1" step="1" value={estimatedUsage} onChange={(e) => setEstimatedUsage(Math.round(Number(e.target.value)))} /></label><label>使用週期<select value={usagePeriod} onChange={(e) => setUsagePeriod(e.target.value as UsagePeriod)}><option value="daily">每日</option><option value="weekly">每週</option><option value="monthly">每月</option></select></label></div>}
     {error && <div className="error-box">{error}</div>}
     <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={categories.length === 0 || submitting}>{submitting ? "儲存中…" : isEdit ? "儲存變更" : "建立品項"}</button></div>
   </form></ModalShell>;
@@ -719,21 +1102,12 @@ function ConfirmDeleteNoteModal({ note, onClose, onConfirm }: { note: HandoverNo
   </ModalShell>;
 }
 
-function ConfirmDeleteMovementModal({ movement, onClose, onConfirm }: { movement: StockMovement; onClose: () => void; onConfirm: () => void }) {
-  return <ModalShell title="刪除異動紀錄" subtitle="此操作無法復原" onClose={onClose}>
-    <p>確定要刪除這筆紀錄嗎？</p>
-    <div className="note-delete-preview"><strong>{movement.itemName}</strong><p>{movement.type} · {formatSignedNumber(movement.change)} {movement.unit}</p><small>{movement.operator} · {movement.createdAt}</small></div>
-    <div className="warning-box"><span>• 這只會從這份紀錄清單移除，不會反向調整庫存數量；如果數量本身也需要修正，請到「庫存管理」用「盤點／修正庫存」處理。</span></div>
-    <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button danger-button" onClick={() => { onConfirm(); onClose(); }}>確定刪除</button></div>
-  </ModalShell>;
-}
-
 function StockCountModal({ item, onClose, onConfirm }: { item: InventoryItem; onClose: () => void; onConfirm: (changeAmount: number, note?: string) => Promise<string | void> }) {
   const [actual, setActual] = useState(item.quantity);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const diff = Math.round((actual - item.quantity) * 100) / 100;
+  const diff = Math.round(actual - item.quantity);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -747,7 +1121,7 @@ function StockCountModal({ item, onClose, onConfirm }: { item: InventoryItem; on
 
   return <ModalShell title="盤點／修正庫存" subtitle={`品項：${item.name}`} onClose={onClose}><form onSubmit={submit}>
     <div className="stock-hint">系統目前數量：{formatNumber(item.quantity)} {item.unit}</div>
-    <label>實際盤點數量（{item.unit}）<input type="number" step="0.01" value={actual} onChange={(e) => setActual(Number(e.target.value))} /></label>
+    <label>實際盤點數量（{item.unit}）<input type="number" min="0" step="1" value={actual} onChange={(e) => setActual(Math.round(Number(e.target.value)))} /></label>
     {diff === 0 ? <div className="setting-note">庫存數量一致，不需要建立異動紀錄。</div> : <div className={`stock-hint ${diff > 0 ? "positive-text" : "danger-text"}`}>差異數量：{formatSignedNumber(diff)} {item.unit}</div>}
     <label>修正原因或備註（可不填）<textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：季度盤點、破損報廢" /></label>
     {error && <div className="error-box">{error}</div>}

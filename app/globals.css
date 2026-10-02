@@ -74,3 +74,5 @@ button { cursor:pointer; }
 .line-match-similar-list button small { color:var(--muted); }
 .line-match-actions { display:flex;gap:8px;flex-wrap:wrap; }
 .line-match-actions button { flex:1; }
+
+.batch-expiry-list { display:grid; gap:2px; }.batch-expiry-list small { display:block; white-space:nowrap; }

@@ -39,7 +39,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     if (typeof body.safetyStock === "number" && Number.isFinite(body.safetyStock)) updates.safety_stock = Math.round(body.safetyStock);
     if (typeof body.suggestedPurchase === "number" && Number.isFinite(body.suggestedPurchase)) updates.suggested_purchase = Math.round(body.suggestedPurchase);
     if (typeof body.supplier === "string") updates.supplier = body.supplier.trim() || null;
-    if (typeof body.expiryDate === "string") updates.nearest_expiry_date = body.expiryDate || null;
+    // 有效期限改由批次決定（入庫時填、資料庫自動算出最早到期日），這裡不接受直接修改。
     if (typeof body.active === "boolean") updates.active = body.active;
 
     const forecast = buildUsageForecastColumns(body);

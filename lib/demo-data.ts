@@ -1,14 +1,19 @@
-import type { HandoverNote, InventoryItem, PurchaseRequest } from "./types";
+import type { HandoverNote, InventoryBatch, InventoryItem, PurchaseRequest } from "./types";
+
+// 示範用批次：[到期日或null, 數量]。
+function demoBatches(itemId: string, entries: Array<[string | null, number]>): InventoryBatch[] {
+  return entries.map(([expiryDate, quantity], index) => ({ id: `${itemId}-b${index + 1}`, expiryDate, quantity, createdAt: "2026-09-01T00:00:00Z" }));
+}
 
 export const initialInventory: InventoryItem[] = [
-  { id: "i1", name: "冬粉", category: "晚餐食材", quantity: 8, safetyStock: 10, suggestedPurchase: 20, unit: "包", expiryDate: "2027-03-01", supplier: "山城食品行", active: true, usageForecastEnabled: false },
-  { id: "i2", name: "瓶裝水", category: "客房備品", quantity: 2, safetyStock: 4, suggestedPurchase: 6, unit: "箱", supplier: "嘉義飲料行", active: true, usageForecastEnabled: false },
-  { id: "i3", name: "客房衛生紙", category: "客房備品", quantity: 5, safetyStock: 10, suggestedPurchase: 12, unit: "串", supplier: "生活百貨", active: true, usageForecastEnabled: true, estimatedUsage: 6, usagePeriod: "weekly" },
-  { id: "i4", name: "牛奶", category: "早餐食材", quantity: 9, safetyStock: 12, suggestedPurchase: 12, unit: "瓶", expiryDate: "2026-09-20", supplier: "在地鮮乳", active: true, usageForecastEnabled: false },
-  { id: "i5", name: "雞蛋", category: "早餐食材", quantity: 32, safetyStock: 24, suggestedPurchase: 30, unit: "顆", expiryDate: "2026-09-22", active: true, usageForecastEnabled: false },
-  { id: "i6", name: "火鍋泡麵", category: "晚餐食材", quantity: 36, safetyStock: 20, suggestedPurchase: 24, unit: "包", expiryDate: "2027-01-15", active: true, usageForecastEnabled: false },
-  { id: "i7", name: "浴巾", category: "客房備品", quantity: 48, safetyStock: 36, suggestedPurchase: 12, unit: "條", active: true, usageForecastEnabled: false },
-  { id: "i8", name: "垃圾袋", category: "清潔用品", quantity: 5, safetyStock: 5, suggestedPurchase: 10, unit: "捲", active: true, usageForecastEnabled: false },
+  { id: "i1", name: "冬粉", category: "晚餐食材", quantity: 8, safetyStock: 10, suggestedPurchase: 20, unit: "包", expiryDate: "2027-03-01", batches: demoBatches("i1", [["2027-03-01", 8]]), supplier: "山城食品行", active: true, usageForecastEnabled: false },
+  { id: "i2", name: "瓶裝水", category: "客房備品", quantity: 2, safetyStock: 4, suggestedPurchase: 6, unit: "箱", batches: demoBatches("i2", [[null, 2]]), supplier: "嘉義飲料行", active: true, usageForecastEnabled: false },
+  { id: "i3", name: "客房衛生紙", category: "客房備品", quantity: 5, safetyStock: 10, suggestedPurchase: 12, unit: "串", batches: demoBatches("i3", [[null, 5]]), supplier: "生活百貨", active: true, usageForecastEnabled: true, estimatedUsage: 6, usagePeriod: "weekly" },
+  { id: "i4", name: "牛奶", category: "早餐食材", quantity: 9, safetyStock: 12, suggestedPurchase: 12, unit: "瓶", expiryDate: "2026-10-05", batches: demoBatches("i4", [["2026-10-05", 3], ["2026-10-12", 6]]), supplier: "在地鮮乳", active: true, usageForecastEnabled: false },
+  { id: "i5", name: "雞蛋", category: "早餐食材", quantity: 32, safetyStock: 24, suggestedPurchase: 30, unit: "顆", expiryDate: "2026-10-08", batches: demoBatches("i5", [["2026-10-08", 12], ["2026-10-20", 20]]), active: true, usageForecastEnabled: false },
+  { id: "i6", name: "火鍋泡麵", category: "晚餐食材", quantity: 36, safetyStock: 20, suggestedPurchase: 24, unit: "包", expiryDate: "2027-01-15", batches: demoBatches("i6", [["2027-01-15", 36]]), active: true, usageForecastEnabled: false },
+  { id: "i7", name: "浴巾", category: "客房備品", quantity: 48, safetyStock: 36, suggestedPurchase: 12, unit: "條", batches: demoBatches("i7", [[null, 48]]), active: true, usageForecastEnabled: false },
+  { id: "i8", name: "垃圾袋", category: "清潔用品", quantity: 5, safetyStock: 5, suggestedPurchase: 10, unit: "捲", batches: demoBatches("i8", [[null, 5]]), active: true, usageForecastEnabled: false },
 ];
 
 export const initialPurchases: PurchaseRequest[] = [

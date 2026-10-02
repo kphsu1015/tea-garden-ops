@@ -50,7 +50,6 @@ export async function POST(request: Request) {
         safety_stock: Number.isFinite(body.safetyStock) ? Math.round(body.safetyStock as number) : 0,
         suggested_purchase: Number.isFinite(body.suggestedPurchase) ? Math.round(body.suggestedPurchase as number) : 1,
         supplier: body.supplier?.trim() || null,
-        nearest_expiry_date: body.expiryDate || null,
         ...forecast.columns,
       })
       .select(INVENTORY_SELECT_COLUMNS)

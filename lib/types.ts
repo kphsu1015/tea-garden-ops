@@ -27,6 +27,14 @@ export interface StaffProfile {
   createdAt: string;
 }
 
+// 同一品項分批進貨、到期日不同時，每一批各自記數量；expiryDate為null代表這批未標日期。
+export interface InventoryBatch {
+  id: string;
+  expiryDate: string | null;
+  quantity: number;
+  createdAt: string;
+}
+
 export interface InventoryItem {
   id: string;
   name: string;
@@ -35,7 +43,10 @@ export interface InventoryItem {
   safetyStock: number;
   suggestedPurchase: number;
   unit: string;
+  // 還有數量的批次中最早的到期日（由資料庫依批次自動計算，不能直接編輯）。
   expiryDate?: string;
+  // 依到期日由早到晚排序，未標日期的排最後。
+  batches: InventoryBatch[];
   supplier?: string;
   active: boolean;
   usageForecastEnabled: boolean;
@@ -50,7 +61,6 @@ export interface InventoryItemInput {
   safetyStock: number;
   suggestedPurchase: number;
   supplier?: string;
-  expiryDate?: string;
   usageForecastEnabled: boolean;
   estimatedUsage?: number;
   usagePeriod?: UsagePeriod;
@@ -96,6 +106,7 @@ export interface ReceiptLine {
   totalPrice?: number;
   inventoryItemId?: string;
   category?: string;
+  expiryDate?: string;
   // 這筆品項在確認入庫時是怎麼處理的：對應現有庫存／建立新庫存品項／忽略（不建立或更新庫存）。
   resolution?: ReceiptLineResolution;
 }

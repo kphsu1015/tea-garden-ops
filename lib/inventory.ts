@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { InventoryItem, MovementType, UsagePeriod } from "@/lib/types";
+import type { InventoryBatch, InventoryItem, MovementType, UsagePeriod } from "@/lib/types";
 
 // 新增庫存異動：中文顯示用的異動類型對應到Postgres的movement_type enum（schema.sql）。
 export const MOVEMENT_TYPE_ENUM: Record<MovementType, string> = {
@@ -43,9 +43,22 @@ type InventoryItemRow = {
   usage_forecast_enabled: boolean;
   estimated_usage: number | null;
   usage_period: string | null;
+  inventory_batches?: Array<{ id: string; expiry_date: string | null; quantity: number; created_at: string }> | null;
 };
 
-export const INVENTORY_SELECT_COLUMNS = "id,name,category,base_unit,quantity,safety_stock,suggested_purchase,supplier,nearest_expiry_date,active,usage_forecast_enabled,estimated_usage,usage_period";
+export const INVENTORY_SELECT_COLUMNS = "id,name,category,base_unit,quantity,safety_stock,suggested_purchase,supplier,nearest_expiry_date,active,usage_forecast_enabled,estimated_usage,usage_period,inventory_batches(id,expiry_date,quantity,created_at)";
+
+// 有日期的依到期日由早到晚，未標日期的排最後；跟資料庫先到期先出的扣庫存順序一致。
+export function sortBatches(batches: InventoryBatch[]): InventoryBatch[] {
+  return [...batches].sort((a, b) => {
+    if (a.expiryDate !== b.expiryDate) {
+      if (a.expiryDate === null) return 1;
+      if (b.expiryDate === null) return -1;
+      return a.expiryDate < b.expiryDate ? -1 : 1;
+    }
+    return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+  });
+}
 
 export function mapInventoryRow(row: InventoryItemRow): InventoryItem {
   return {
@@ -58,6 +71,9 @@ export function mapInventoryRow(row: InventoryItemRow): InventoryItem {
     suggestedPurchase: Number(row.suggested_purchase),
     supplier: row.supplier ?? undefined,
     expiryDate: row.nearest_expiry_date ?? undefined,
+    batches: sortBatches((row.inventory_batches ?? [])
+      .filter((batch) => Number(batch.quantity) > 0)
+      .map((batch) => ({ id: batch.id, expiryDate: batch.expiry_date, quantity: Number(batch.quantity), createdAt: batch.created_at }))),
     active: row.active,
     usageForecastEnabled: row.usage_forecast_enabled,
     estimatedUsage: row.estimated_usage !== null ? Number(row.estimated_usage) : undefined,
@@ -135,6 +151,48 @@ export function estimatedRemainingLabel(item: Pick<InventoryItem, "quantity" | "
   const periodsRemaining = item.quantity / usage;
   const rounded = item.quantity > 0 ? Math.max(1, Math.round(periodsRemaining)) : 0;
   return `預估可使用${rounded}${PERIOD_UNIT_LABEL[period]}`;
+}
+
+// --- 即將過期批次（純函式，前後端共用） ---
+
+export const EXPIRY_WARNING_DAYS = 14;
+
+export interface ExpiringBatch {
+  item: InventoryItem;
+  batch: InventoryBatch;
+  expiryDate: string;
+  daysLeft: number;
+}
+
+export function isDateKey(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
+}
+
+function dateKeyToDayNumber(key: string): number {
+  const [y, m, d] = key.split("-").map(Number);
+  return Math.round(Date.UTC(y, m - 1, d) / 86400000);
+}
+
+// 今天（Asia/Taipei）的YYYY-MM-DD，跟資料庫date欄位直接比較，不受員工裝置時區影響。
+export function taipeiDateKey(date: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+}
+
+// 列出已過期或withinDays天內到期的批次（未標日期的批次不列入），依到期日由早到晚排序。
+export function getExpiringBatches(items: InventoryItem[], todayKey: string, withinDays = EXPIRY_WARNING_DAYS): ExpiringBatch[] {
+  const today = dateKeyToDayNumber(todayKey);
+  return items
+    .flatMap((item) => item.batches
+      .filter((batch) => batch.expiryDate !== null && batch.quantity > 0)
+      .map((batch) => ({ item, batch, expiryDate: batch.expiryDate as string, daysLeft: dateKeyToDayNumber(batch.expiryDate as string) - today })))
+    .filter((entry) => entry.daysLeft <= withinDays)
+    .sort((a, b) => a.daysLeft - b.daysLeft);
+}
+
+export function expiryLabel(daysLeft: number): string {
+  if (daysLeft < 0) return `已過期${-daysLeft}天`;
+  if (daysLeft === 0) return "今天到期";
+  return `${daysLeft}天後到期`;
 }
 
 // --- 進貨單品項比對（純函式）：AI辨識的品名如果沒有「精確」對應現有庫存，就不可以自動建立，

@@ -6,6 +6,8 @@ export interface StockMovementRecord {
   movementType: string;
   quantityChange: number;
   unit: string;
+  // 這筆異動動到的批次到期日（快照）；null代表未標日期，或是批次功能上線前的舊紀錄。
+  expiryDate: string | null;
   note: string | null;
   operatorName: string;
   createdAt: string;
@@ -16,6 +18,7 @@ type RawMovementRow = {
   movement_type: string;
   quantity_change: number;
   unit: string;
+  expiry_date: string | null;
   note: string | null;
   created_at: string;
   inventory_items: { name: string } | { name: string }[] | null;
@@ -37,6 +40,7 @@ export function mapMovementRow(row: RawMovementRow): StockMovementRecord {
     movementType: MOVEMENT_TYPE_LABELS[row.movement_type] ?? row.movement_type,
     quantityChange: Number(row.quantity_change),
     unit: row.unit,
+    expiryDate: row.expiry_date ?? null,
     note: row.note,
     operatorName: operator?.display_name ?? "—",
     createdAt: row.created_at,

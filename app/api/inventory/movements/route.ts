@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
-const MOVEMENT_SELECT_COLUMNS = "id,movement_type,quantity_change,unit,note,created_at,inventory_items(name),staff_profiles(display_name)";
+const MOVEMENT_SELECT_COLUMNS = "id,movement_type,quantity_change,unit,expiry_date,note,created_at,inventory_items(name),staff_profiles(display_name)";
 
 // 異動歷史查詢：純讀取stock_movements，RLS本身就允許所有在職員工查看（is_active_staff()），
 // 這裡不額外限制角色。可用品項id、異動類型篩選，預設回傳最近200筆。

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isDateKey } from "@/lib/inventory";
 import { getReceiptRetentionDays, mapReceiptRow, RECEIPT_SELECT_COLUMNS } from "@/lib/shared-records";
 import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
@@ -46,6 +47,8 @@ type ReceiptLineInput = {
   totalPrice?: number;
   category?: string;
   inventoryItemId?: string;
+  // 這批貨的到期日（選填），確認入庫時依此建立／併入庫存批次。
+  expiryDate?: string;
   newItem?: NewItemDraft;
 };
 
@@ -103,6 +106,7 @@ export async function POST(request: Request) {
       if (!(line.quantity > 0)) return NextResponse.json({ error: "品項數量必須大於0。" }, { status: 400 });
       if (typeof line.unitPrice === "number" && line.unitPrice < 0) return NextResponse.json({ error: "單價不可為負數。" }, { status: 400 });
       if (typeof line.totalPrice === "number" && line.totalPrice < 0) return NextResponse.json({ error: "品項金額不可為負數。" }, { status: 400 });
+      if (line.expiryDate && !isDateKey(line.expiryDate)) return NextResponse.json({ error: `「${line.itemName}」的到期日格式不正確。` }, { status: 400 });
       if (line.action !== "existing" && line.action !== "create_new" && line.action !== "ignore") {
         return NextResponse.json({ error: "每個品項都必須選擇：對應現有庫存、建立新庫存品項或忽略此品項。" }, { status: 400 });
       }

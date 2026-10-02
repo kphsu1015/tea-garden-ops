@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { initialNotes, initialPurchases } from "@/lib/demo-data";
-import { estimatedRemainingLabel, getLowStockReason, lowStockReasonLabel, MOVEMENT_TYPE_DEFAULT_DIRECTION, MOVEMENT_TYPE_ENUM, periodFrequencyLabel } from "@/lib/inventory";
+import { EXPIRY_WARNING_DAYS, estimatedRemainingLabel, expiryLabel, getExpiringBatches, getLowStockReason, lowStockReasonLabel, MOVEMENT_TYPE_DEFAULT_DIRECTION, MOVEMENT_TYPE_ENUM, periodFrequencyLabel, taipeiDateKey, type ExpiringBatch } from "@/lib/inventory";
 import type { StockMovementRecord } from "@/lib/movements";
 import { formatNumber, formatSignedNumber, formatTaipeiDateLabel, getTaipeiHour, greetingForHour } from "@/lib/format";
 import { generateId } from "@/lib/id";
@@ -18,7 +18,7 @@ import { SettingsView } from "@/components/settings-view";
 import { StaffView } from "@/components/staff-view";
 import { requestJson, usePolling, useSharedData } from "@/components/use-shared-data";
 import { createClient } from "@/lib/supabase/client";
-import type { AssignableStaffRole, HandoverNote, InventoryCategory, InventoryItem, InventoryItemInput, MovementType, NoteDraft, PurchaseDraft, PurchaseRequest, PurchaseStatus, ReceiptRecord, UsagePeriod } from "@/lib/types";
+import type { AssignableStaffRole, HandoverNote, InventoryBatch, InventoryCategory, InventoryItem, InventoryItemInput, MovementType, NoteDraft, PurchaseDraft, PurchaseRequest, PurchaseStatus, ReceiptRecord, UsagePeriod } from "@/lib/types";
 
 type View = "dashboard" | "inventory" | "purchases" | "receipts" | "movement-log" | "report" | "notes" | "staff" | "settings";
 type Modal = "purchase" | "movement" | "item" | "note" | null;
@@ -177,6 +177,8 @@ function useCategories() {
   return { categories, loading, error, demo, addCategory, renameCategory, toggleCategoryActive, deleteCategory, reorderCategory, refresh };
 }
 
+type StocktakeCount = { batchId: string; actual: number } | { expiryDate?: string; actual: number };
+
 function useInventory() {
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -247,11 +249,17 @@ function useInventory() {
 
   // 盤點／修正庫存、新增庫存異動：都透過record_stock_movement()交易函式寫入，quantity會是伺服器端的真實新值，
   // mutate內建的refresh()結束後items會拿到正確數量，不需要再手動調整。
-  const countStock = (id: string, changeAmount: number, note?: string, movementType?: string) => mutate(() => fetch(`/api/inventory/${id}/count`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ changeAmount, note, movementType }),
+  // batch.batchId：減少時指定扣哪一批（不填就先到期先出）；batch.expiryDate：增加時新庫存的到期日。
+  const countStock = (id: string, changeAmount: number, note?: string, movementType?: string, batch?: { batchId?: string; expiryDate?: string }) => mutate(() => fetch(`/api/inventory/${id}/count`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ changeAmount, note, movementType, ...batch }),
   }));
 
-  return { items, loading, error, demo, addItem, updateItem, setItemActive, deleteItem, countStock, refresh, createAndReturnItem };
+  // 依批次盤點：一次送出每一批的實際數量，伺服器在同一個交易內修正。
+  const stocktake = (id: string, counts: StocktakeCount[], note?: string) => mutate(() => fetch(`/api/inventory/${id}/stocktake`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ counts, note }),
+  }));
+
+  return { items, loading, error, demo, addItem, updateItem, setItemActive, deleteItem, countStock, stocktake, refresh, createAndReturnItem };
 }
 
 const navItems: Array<{ id: View; label: string; icon: typeof Box }> = [
@@ -264,6 +272,8 @@ const navItems: Array<{ id: View; label: string; icon: typeof Box }> = [
   { id: "notes", label: "交接留言", icon: MessageSquareText },
   { id: "staff", label: "員工管理", icon: Users },
 ];
+
+const EXPIRY_WINDOW_LABEL = `${EXPIRY_WARNING_DAYS}天`;
 
 const statusSteps: PurchaseStatus[] = ["待確認", "已訂購", "已到貨", "已入庫"];
 
@@ -403,7 +413,7 @@ export function OperationsApp() {
   }, [activeCategoryNames, editingItem]);
 
   const lowStock = useMemo(() => activeInventory.filter((item) => getLowStockReason(item) !== null), [activeInventory]);
-  const expiring = useMemo(() => activeInventory.filter((item) => item.expiryDate).slice(0, 4), [activeInventory]);
+  const expiring = useMemo(() => getExpiringBatches(activeInventory, taipeiDateKey()), [activeInventory]);
   const pending = purchases.filter((request) => !["已入庫", "暫緩"].includes(request.status));
 
   const openPurchaseModal = (initialItem?: string) => {
@@ -534,12 +544,12 @@ export function OperationsApp() {
       {countingItem && <StockCountModal
         item={countingItem}
         onClose={() => setCountingItem(null)}
-        onConfirm={(changeAmount, note) => inventoryState.countStock(countingItem.id, changeAmount, note)}
+        onConfirm={(counts, note) => inventoryState.stocktake(countingItem.id, counts, note)}
       />}
       {movingItem && <MovementEntryModal
         item={movingItem}
         onClose={() => setMovingItem(null)}
-        onConfirm={(movementType, changeAmount, note) => inventoryState.countStock(movingItem.id, changeAmount, note, movementType)}
+        onConfirm={(movementType, changeAmount, note, batch) => inventoryState.countStock(movingItem.id, changeAmount, note, movementType, batch)}
       />}
       {deletingNote && <ConfirmDeleteNoteModal
         note={deletingNote}
@@ -794,7 +804,7 @@ function UserMenu({ email, displayName, role, demo, onSaved }: {
   </div>;
 }
 
-function Dashboard({ lowStock, pending, expiring, notes, onView, onPurchase }: { lowStock: InventoryItem[]; pending: PurchaseRequest[]; expiring: InventoryItem[]; notes: HandoverNote[]; onView: (v: View) => void; onPurchase: () => void }) {
+function Dashboard({ lowStock, pending, expiring, notes, onView, onPurchase }: { lowStock: InventoryItem[]; pending: PurchaseRequest[]; expiring: ExpiringBatch[]; notes: HandoverNote[]; onView: (v: View) => void; onPurchase: () => void }) {
   const now = new Date();
   const greeting = greetingForHour(getTaipeiHour(now));
   return <>
@@ -813,7 +823,7 @@ function Dashboard({ lowStock, pending, expiring, notes, onView, onPurchase }: {
         <div className="compact-list">{pending.slice(0, 5).map((r) => <div key={r.id}><span className="item-avatar">購</span><div><strong>{r.itemName}</strong><small>{r.requester} · {r.requestedAt.slice(5, 10)}</small></div><b>{r.quantity}{r.unit}</b><Status status={r.status} /></div>)}</div>
       </Panel>
       <Panel title="即將過期食材" icon={Clock3} action="查看庫存" onAction={() => onView("inventory")}>
-        <div className="expiry-list">{expiring.map((item) => <div key={item.id}><div><strong>{item.name}</strong><small>目前 {formatNumber(item.quantity)}{item.unit}</small></div><Pill tone="gold">{item.expiryDate} 到期</Pill></div>)}</div>
+        <div className="expiry-list">{expiring.length === 0 ? <p className="notif-empty">{EXPIRY_WINDOW_LABEL}內沒有到期的批次。</p> : expiring.slice(0, 6).map(({ item, batch, expiryDate, daysLeft }) => <div key={batch.id}><div><strong>{item.name}</strong><small>這批 {formatNumber(batch.quantity)}{item.unit} · {expiryDate} 到期</small></div><Pill tone={daysLeft < 0 ? "red" : "gold"}>{expiryLabel(daysLeft)}</Pill></div>)}</div>
       </Panel>
       <Panel title="最新交接留言" icon={MessageSquareText} action="查看留言" onAction={() => onView("notes")}>
         <div className="note-list">{notes.slice(0, 3).map((note) => <div key={note.id}><span className={note.important ? "note-dot important" : "note-dot"} /><div><strong>{note.content}</strong><small>{note.author} · {note.createdAt}</small></div></div>)}</div>
@@ -857,6 +867,7 @@ function InventoryView({ items, loading, error, demo, categories, query, setQuer
   const [showInactive, setShowInactive] = useState(false);
   const visible = showInactive ? items : items.filter((item) => item.active);
   const filtered = visible.filter((item) => (category === "全部" || item.category === category) && item.name.includes(query));
+  const todayKey = taipeiDateKey();
   return <><div className="section-header"><div><h1>庫存管理</h1><p>掌握各區備品與食材數量，低於安全庫存或預估用量不足時立即提醒。</p></div><div className="header-actions"><button className="primary-button" onClick={onAddItem} disabled={!canManage}><Plus size={18} />新增品項</button></div></div>
     {demo && <div className="warning-box"><span>• 尚未設定Supabase，目前僅顯示唯讀示範庫存，無法新增／編輯／停用／刪除／盤點。</span></div>}
     {error && <div className="error-box">{error}</div>}
@@ -870,13 +881,21 @@ function InventoryView({ items, loading, error, demo, categories, query, setQuer
         <td><b className={reason ? "danger-text" : ""}>{formatNumber(item.quantity)} {item.unit}</b></td>
         <td>{formatNumber(item.safetyStock)} {item.unit}</td>
         <td>{item.usageForecastEnabled && item.estimatedUsage && item.usagePeriod ? <><strong>{periodFrequencyLabel(item.usagePeriod)}{formatNumber(item.estimatedUsage)}{item.unit}</strong><small>{remaining}</small></> : <small>未啟用</small>}</td>
-        <td>{item.expiryDate || "—"}</td>
+        <td><BatchExpiryList item={item} todayKey={todayKey} /></td>
         <td>{!item.active ? <Pill tone="red">已停用</Pill> : reason ? <Pill tone="red">低庫存</Pill> : <Pill>充足</Pill>}</td>
         <td>{reason ? <small className="danger-text">{lowStockReasonLabel(reason)}</small> : "—"}</td>
         <td><div className="row-actions">{item.active && <button className="text-button" onClick={() => onPurchase(item.name)}>提出採購</button>}<button aria-label={`盤點${item.name}`} title={`盤點${item.name}`} disabled={!canCount} onClick={() => onCountItem(item)}><ClipboardCheck size={15} /></button><button aria-label={`新增${item.name}異動`} title={`新增${item.name}異動`} disabled={!canCount} onClick={() => onAddMovement(item)}><ClipboardList size={15} /></button><button aria-label={`編輯${item.name}`} title={`編輯${item.name}`} disabled={!canManage} onClick={() => onEditItem(item)}><Pencil size={15} /></button><button aria-label={item.active ? `停用${item.name}` : `啟用${item.name}`} title={item.active ? `停用${item.name}` : `啟用${item.name}`} disabled={item.active ? !canManage : !canReactivateOrDelete} onClick={() => onToggleActive(item)}><Power size={15} /></button><button className="danger" aria-label={`刪除${item.name}`} title={`刪除${item.name}`} disabled={!canReactivateOrDelete} onClick={() => onDeleteItem(item)}><Trash2 size={15} /></button></div></td>
       </tr>;
     })}</tbody></table></div>}
   </>;
+}
+
+// 有效期限欄：列出每一批的到期日與數量（先到期的在上面），已過期或EXPIRY_WARNING_DAYS天內到期的標紅。
+// 只有一批而且未標日期時顯示「—」，跟以前沒填期限的樣子一樣。
+function BatchExpiryList({ item, todayKey }: { item: InventoryItem; todayKey: string }) {
+  if (item.batches.length === 0 || (item.batches.length === 1 && item.batches[0].expiryDate === null)) return <>—</>;
+  const soonKeys = new Set(getExpiringBatches([item], todayKey).map((entry) => entry.batch.id));
+  return <div className="batch-expiry-list">{item.batches.map((batch) => <small key={batch.id} className={soonKeys.has(batch.id) ? "danger-text" : ""}>{batch.expiryDate ?? "未標日期"} · {formatNumber(batch.quantity)}{item.unit}</small>)}</div>;
 }
 
 function PurchasesView({ requests, loading, loadError, canAdvance, onAdvance, onNew }: {
@@ -960,7 +979,7 @@ function MovementLogView({ inventory }: { inventory: InventoryItem[] }) {
       <select value={movementTypeLabel} onChange={(e) => setMovementTypeLabel(e.target.value as MovementType | "")}><option value="">全部類型</option>{movementTypeOptions.map((t) => <option key={t}>{t}</option>)}</select>
     </div>
     {error && <div className="error-box">{error}</div>}
-    {loading ? <p>載入異動紀錄中…</p> : movements.length === 0 ? <div className="report-empty-state"><AlertTriangle size={28} /><strong>沒有符合條件的異動紀錄</strong><p>請調整篩選條件，或先到「庫存管理」新增異動／盤點。</p></div> : <div className="table-card"><table><thead><tr><th>時間</th><th>品項</th><th>異動類型</th><th>數量</th><th>操作人</th><th>備註</th></tr></thead><tbody>{movements.map((m) => <tr key={m.id}><td>{new Date(m.createdAt).toLocaleString("zh-TW")}</td><td><strong>{m.itemName}</strong></td><td>{m.movementType}</td><td><b className={m.quantityChange > 0 ? "positive-text" : "danger-text"}>{formatSignedNumber(m.quantityChange)} {m.unit}</b></td><td>{m.operatorName}</td><td>{m.note || "—"}</td></tr>)}</tbody></table></div>}
+    {loading ? <p>載入異動紀錄中…</p> : movements.length === 0 ? <div className="report-empty-state"><AlertTriangle size={28} /><strong>沒有符合條件的異動紀錄</strong><p>請調整篩選條件，或先到「庫存管理」新增異動／盤點。</p></div> : <div className="table-card"><table><thead><tr><th>時間</th><th>品項</th><th>異動類型</th><th>數量</th><th>批次到期日</th><th>操作人</th><th>備註</th></tr></thead><tbody>{movements.map((m) => <tr key={m.id}><td>{new Date(m.createdAt).toLocaleString("zh-TW")}</td><td><strong>{m.itemName}</strong></td><td>{m.movementType}</td><td><b className={m.quantityChange > 0 ? "positive-text" : "danger-text"}>{formatSignedNumber(m.quantityChange)} {m.unit}</b></td><td>{m.expiryDate || "—"}</td><td>{m.operatorName}</td><td>{m.note || "—"}</td></tr>)}</tbody></table></div>}
   </>;
 }
 
@@ -1064,39 +1083,64 @@ const MOVEMENT_TYPES = Object.keys(MOVEMENT_TYPE_ENUM) as MovementType[];
 
 // 新增庫存異動：跟「盤點／修正庫存」一樣真的呼叫record_stock_movement，差別是這裡要選異動類型
 // （採購入庫／日常領用／客房補充／食材使用／損壞／過期報廢／盤點調整），盤點只單純比對系統與實際數量。
+function batchLabel(batch: InventoryBatch, unit: string): string {
+  return `${batch.expiryDate ? `${batch.expiryDate} 到期` : "未標日期"}（${formatNumber(batch.quantity)}${unit}）`;
+}
+
+const AUTO_BATCH = "";
+
 function MovementEntryModal({ item, onClose, onConfirm }: {
   item: InventoryItem;
   onClose: () => void;
-  onConfirm: (movementType: string, changeAmount: number, note?: string) => Promise<string | void>;
+  onConfirm: (movementType: string, changeAmount: number, note?: string, batch?: { batchId?: string; expiryDate?: string }) => Promise<string | void>;
 }) {
   const [type, setType] = useState<MovementType>("採購入庫");
   const [direction, setDirection] = useState<"increase" | "decrease">("increase");
   const [amount, setAmount] = useState(1);
+  const [expiryDate, setExpiryDate] = useState("");
+  const [batchId, setBatchId] = useState(AUTO_BATCH);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
   const fixedDirection = MOVEMENT_TYPE_DEFAULT_DIRECTION[type];
   const effectiveDirection = fixedDirection ?? direction;
+  // 過期報廢一定要指定是哪一批（預設最早到期的那批）；其他減少的類型預設先到期先出。
+  const mustPickBatch = type === "過期報廢";
+  const effectiveBatchId = mustPickBatch && batchId === AUTO_BATCH ? (item.batches[0]?.id ?? AUTO_BATCH) : batchId;
+  const selectedBatch = item.batches.find((b) => b.id === effectiveBatchId);
+  const available = selectedBatch ? selectedBatch.quantity : item.quantity;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!(amount > 0)) { setError("數量必須大於0。"); return; }
+    if (effectiveDirection === "decrease" && amount > available) { setError(`${selectedBatch ? "這批" : "目前"}只剩${formatNumber(available)}${item.unit}，無法減少${formatNumber(amount)}${item.unit}。`); return; }
     setSubmitting(true);
     setError("");
     const changeAmount = effectiveDirection === "increase" ? Math.abs(amount) : -Math.abs(amount);
-    const saveError = await onConfirm(MOVEMENT_TYPE_ENUM[type], changeAmount, note.trim() || undefined);
+    const batch = effectiveDirection === "increase"
+      ? { expiryDate: expiryDate || undefined }
+      : { batchId: effectiveBatchId || undefined };
+    const saveError = await onConfirm(MOVEMENT_TYPE_ENUM[type], changeAmount, note.trim() || undefined, batch);
     setSubmitting(false);
     if (saveError) setError(saveError); else onClose();
   };
 
   return <ModalShell title="新增庫存異動" subtitle={`品項：${item.name}`} onClose={onClose}><form onSubmit={submit}>
     <div className="stock-hint">目前庫存：{formatNumber(item.quantity)} {item.unit}</div>
-    <label>異動類型<select value={type} onChange={(e) => setType(e.target.value as MovementType)}>{MOVEMENT_TYPES.map((t) => <option key={t}>{t}</option>)}</select></label>
+    <label>異動類型<select value={type} onChange={(e) => { setType(e.target.value as MovementType); setBatchId(AUTO_BATCH); }}>{MOVEMENT_TYPES.map((t) => <option key={t}>{t}</option>)}</select></label>
     <div className="form-grid">
       <label>方向<select value={effectiveDirection} disabled={Boolean(fixedDirection)} onChange={(e) => setDirection(e.target.value as "increase" | "decrease")}><option value="increase">增加</option><option value="decrease">減少</option></select></label>
       <label>數量（{item.unit}）<input type="number" min="1" step="1" value={amount} onChange={(e) => setAmount(Math.round(Number(e.target.value)))} /></label>
     </div>
+    {effectiveDirection === "increase"
+      ? <label>這批的有效期限（可不填；跟現有批次同一天會併在一起）<input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} /></label>
+      : item.batches.length === 0
+        ? <div className="warning-box"><span>• 這個品項目前沒有庫存，無法減少。</span></div>
+        : <label>從哪一批扣<select value={effectiveBatchId} onChange={(e) => setBatchId(e.target.value)}>
+            {!mustPickBatch && <option value={AUTO_BATCH}>自動：先到期的先扣</option>}
+            {item.batches.map((b) => <option key={b.id} value={b.id}>{batchLabel(b, item.unit)}</option>)}
+          </select></label>}
     <label>備註（可不填）<textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="填寫用途或調整原因" /></label>
     {error && <div className="error-box">{error}</div>}
     <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={submitting}>{submitting ? "儲存中…" : "儲存異動"}</button></div>
@@ -1116,7 +1160,6 @@ function ItemModal({ categories, item, onClose, onSave }: {
   const [safetyStock, setSafetyStock] = useState(item?.safetyStock ?? 0);
   const [suggestedPurchase, setSuggestedPurchase] = useState(item?.suggestedPurchase ?? 1);
   const [supplier, setSupplier] = useState(item?.supplier ?? "");
-  const [expiryDate, setExpiryDate] = useState(item?.expiryDate ?? "");
   const [usageForecastEnabled, setUsageForecastEnabled] = useState(item?.usageForecastEnabled ?? false);
   const [estimatedUsage, setEstimatedUsage] = useState(item?.estimatedUsage ?? 1);
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriod>(item?.usagePeriod ?? "daily");
@@ -1136,7 +1179,6 @@ function ItemModal({ categories, item, onClose, onSave }: {
       safetyStock,
       suggestedPurchase,
       supplier: supplier.trim() || undefined,
-      expiryDate: expiryDate || undefined,
       usageForecastEnabled,
       estimatedUsage: usageForecastEnabled ? estimatedUsage : undefined,
       usagePeriod: usageForecastEnabled ? usagePeriod : undefined,
@@ -1151,7 +1193,7 @@ function ItemModal({ categories, item, onClose, onSave }: {
     <div className="form-grid"><label>分類<select required disabled={categories.length === 0} value={category} onChange={(e) => setCategory(e.target.value)}>{categories.map((name) => <option key={name}>{name}</option>)}</select></label><label>計算單位<input required value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="包、瓶、公斤" /></label></div>
     <div className="form-grid"><label>安全庫存<input type="number" min="0" step="1" value={safetyStock} onChange={(e) => setSafetyStock(Math.round(Number(e.target.value)))} /></label><label>建議採購量<input type="number" min="0" step="1" value={suggestedPurchase} onChange={(e) => setSuggestedPurchase(Math.round(Number(e.target.value)))} /></label></div>
     <label>供應商<input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="可稍後設定" /></label>
-    <label>保存期限（可不填）<input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} /></label>
+    <div className="setting-note">有效期限改在入庫時填寫（新增進貨單或新增異動），同一品項可以有多個不同日期。</div>
     <label className="check-label"><input type="checkbox" checked={usageForecastEnabled} onChange={(e) => setUsageForecastEnabled(e.target.checked)} />啟用預估使用量</label>
     {usageForecastEnabled && <div className="form-grid"><label>預估使用量（{unit || "單位"}）<input required type="number" min="1" step="1" value={estimatedUsage} onChange={(e) => setEstimatedUsage(Math.round(Number(e.target.value)))} /></label><label>使用週期<select value={usagePeriod} onChange={(e) => setUsagePeriod(e.target.value as UsagePeriod)}><option value="daily">每日</option><option value="weekly">每週</option><option value="monthly">每月</option></select></label></div>}
     {error && <div className="error-box">{error}</div>}
@@ -1198,30 +1240,46 @@ function ConfirmDeleteNoteModal({ note, onClose, onConfirm }: { note: HandoverNo
   </ModalShell>;
 }
 
-function StockCountModal({ item, onClose, onConfirm }: { item: InventoryItem; onClose: () => void; onConfirm: (changeAmount: number, note?: string) => Promise<string | void> }) {
-  const [actual, setActual] = useState(item.quantity);
+// 依批次盤點：每一批分別輸入實際數量；盤點時多找到、系統裡沒有的庫存，用「新增一個日期」補上。
+function StockCountModal({ item, onClose, onConfirm }: { item: InventoryItem; onClose: () => void; onConfirm: (counts: StocktakeCount[], note?: string) => Promise<string | void> }) {
+  const [actuals, setActuals] = useState<Record<string, number>>(() => Object.fromEntries(item.batches.map((b) => [b.id, b.quantity])));
+  const [extraRows, setExtraRows] = useState<Array<{ id: string; expiryDate: string; actual: number }>>([]);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const diff = Math.round(actual - item.quantity);
+
+  const batchCounts = item.batches
+    .filter((b) => Math.round(actuals[b.id] ?? b.quantity) !== b.quantity)
+    .map((b) => ({ batchId: b.id, actual: Math.round(actuals[b.id] ?? b.quantity) }));
+  const extraCounts = extraRows.filter((row) => row.actual > 0).map((row) => ({ expiryDate: row.expiryDate || undefined, actual: Math.round(row.actual) }));
+  const counts: StocktakeCount[] = [...batchCounts, ...extraCounts];
+  const newTotal = item.batches.reduce((sum, b) => sum + Math.round(actuals[b.id] ?? b.quantity), 0) + extraCounts.reduce((sum, c) => sum + c.actual, 0);
+  const diff = newTotal - item.quantity;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (diff === 0) return;
+    if (counts.length === 0) return;
     setSubmitting(true);
     setError("");
-    const saveError = await onConfirm(diff, note.trim() || undefined);
+    const saveError = await onConfirm(counts, note.trim() || undefined);
     setSubmitting(false);
     if (saveError) setError(saveError); else onClose();
   };
 
   return <ModalShell title="盤點／修正庫存" subtitle={`品項：${item.name}`} onClose={onClose}><form onSubmit={submit}>
-    <div className="stock-hint">系統目前數量：{formatNumber(item.quantity)} {item.unit}</div>
-    <label>實際盤點數量（{item.unit}）<input type="number" min="0" step="1" value={actual} onChange={(e) => setActual(Math.round(Number(e.target.value)))} /></label>
-    {diff === 0 ? <div className="setting-note">庫存數量一致，不需要建立異動紀錄。</div> : <div className={`stock-hint ${diff > 0 ? "positive-text" : "danger-text"}`}>差異數量：{formatSignedNumber(diff)} {item.unit}</div>}
+    <div className="stock-hint">系統目前數量：{formatNumber(item.quantity)} {item.unit}{item.batches.length > 1 ? `（${item.batches.length}批）` : ""}</div>
+    {item.batches.map((b) => <label key={b.id}>{b.expiryDate ? `${b.expiryDate} 到期` : "未標日期"}：系統 {formatNumber(b.quantity)}{item.unit}，實際
+      <input type="number" min="0" step="1" value={actuals[b.id] ?? b.quantity} onChange={(e) => setActuals({ ...actuals, [b.id]: Math.max(0, Math.round(Number(e.target.value))) })} />
+    </label>)}
+    {extraRows.map((row) => <div key={row.id} className="form-grid">
+      <label>多找到的有效期限（可不填）<input type="date" value={row.expiryDate} onChange={(e) => setExtraRows(extraRows.map((r) => r.id === row.id ? { ...r, expiryDate: e.target.value } : r))} /></label>
+      <label>數量（{item.unit}）<input type="number" min="0" step="1" value={row.actual} onChange={(e) => setExtraRows(extraRows.map((r) => r.id === row.id ? { ...r, actual: Math.max(0, Math.round(Number(e.target.value))) } : r))} /></label>
+    </div>)}
+    <button type="button" className="text-button" onClick={() => setExtraRows([...extraRows, { id: generateId(), expiryDate: "", actual: 1 }])}><Plus size={15} />{item.batches.length === 0 ? "新增庫存（含有效期限）" : "新增一個日期（盤點時多找到的）"}</button>
+    {counts.length === 0 ? <div className="setting-note">庫存數量一致，不需要建立異動紀錄。</div> : <div className={`stock-hint ${diff > 0 ? "positive-text" : diff < 0 ? "danger-text" : ""}`}>盤點後總數：{formatNumber(newTotal)} {item.unit}（差異 {formatSignedNumber(diff)}）</div>}
     <label>修正原因或備註（可不填）<textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：季度盤點、破損報廢" /></label>
     {error && <div className="error-box">{error}</div>}
-    <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={diff === 0 || submitting}>{submitting ? "儲存中…" : "確認修正庫存"}</button></div>
+    <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={counts.length === 0 || submitting}>{submitting ? "儲存中…" : "確認修正庫存"}</button></div>
   </form></ModalShell>;
 }
 

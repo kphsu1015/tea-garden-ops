@@ -6,6 +6,7 @@
 
 - 管理總覽：低庫存、待採購、即將過期、交接留言
 - 庫存清單、分類搜尋與安全庫存警示
+- 同一品項多個有效期限（批次管理）：入庫時填到期日，領用時先到期先扣，可依批次報廢與盤點
 - 採購需求看板及狀態推進
 - 採購入庫、領用、使用、報廢與盤點異動
 - 交接留言與重要標記
@@ -32,7 +33,7 @@ npm run dev
 ## 正式Supabase設定
 
 1. 建立Supabase專案。
-2. 在SQL Editor依序執行 `supabase/schema.sql`，再執行 `supabase/migrations/0001_inventory_category_management.sql`（新增分類排序／啟用欄位並寫入預設分類）。
+2. 在SQL Editor依序執行 `supabase/schema.sql`，再執行 `supabase/migrations/0001_inventory_category_management.sql`（新增分類排序／啟用欄位並寫入預設分類）。之後依編號順序執行 `supabase/migrations/` 內其餘檔案（目前到 `0014_inventory_expiry_batches.sql`：把庫存改成依有效期限分批，既有庫存會自動轉成一批）。
 3. 複製 `.env.example` 為 `.env.local`。
 4. 填入：
 

@@ -76,3 +76,4 @@ button { cursor:pointer; }
 .line-match-actions button { flex:1; }
 
 .batch-expiry-list { display:grid; gap:2px; }.batch-expiry-list small { display:block; white-space:nowrap; }
+.purchase-card .priority-toggle { display:flex;gap:4px;margin-top:8px;background:#f3f0e8;border-radius:8px;padding:3px; }.purchase-card .priority-toggle button { flex:1;margin:0;padding:5px;background:transparent;color:var(--muted);font-weight:600; }.purchase-card .priority-toggle button.active { background:white;color:var(--forest);font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,.08); }.purchase-card .priority-toggle button.active.urgent { background:var(--red);color:white; }

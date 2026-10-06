@@ -354,6 +354,15 @@ export function OperationsApp() {
     if (error) return error;
     await purchasesState.refresh(true);
   };
+  const setPurchasePriority = async (id: string, priority: PurchaseRequest["priority"]): Promise<string | void> => {
+    if (!session.configured) {
+      setLocalPurchases(localPurchases.map((r) => r.id === id ? { ...r, priority } : r));
+      return;
+    }
+    const error = await requestJson(`/api/purchases/${id}`, "PATCH", { priority });
+    if (error) return error;
+    await purchasesState.refresh(true);
+  };
   const addNote = async (draft: NoteDraft): Promise<string | void> => {
     if (!session.configured) {
       setLocalNotes([{ id: generateId(), ...draft, author: "Alan", createdAt: new Date().toLocaleString("zh-TW", { hour12: false }) }, ...localNotes]);
@@ -494,7 +503,7 @@ export function OperationsApp() {
             onAddMovement={(item) => setMovingItem(item)}
             onPurchase={openPurchaseModal}
           />}
-          {view === "purchases" && <PurchasesView requests={purchases} loading={session.configured && purchasesState.loading} loadError={session.configured ? purchasesState.error : ""} canAdvance={role === "admin" || role === "purchaser" || !session.configured} onAdvance={advancePurchase} onNew={() => openPurchaseModal()} />}
+          {view === "purchases" && <PurchasesView requests={purchases} loading={session.configured && purchasesState.loading} loadError={session.configured ? purchasesState.error : ""} canAdvance={role === "admin" || role === "purchaser" || !session.configured} onAdvance={advancePurchase} onSetPriority={setPurchasePriority} onNew={() => openPurchaseModal()} />}
           {view === "receipts" && <ReceiptScanner inventory={activeInventory} categories={activeCategoryNames} receipts={receipts} retentionDays={retentionDays} onConfirm={async (record) => {
             // 新品項建立、庫存數量與異動紀錄都已經在Supabase交易（RPC）內原子性完成，這裡只需要重新整理庫存與進貨單列表。
             await inventoryState.refresh();
@@ -898,12 +907,13 @@ function BatchExpiryList({ item, todayKey }: { item: InventoryItem; todayKey: st
   return <div className="batch-expiry-list">{item.batches.map((batch) => <small key={batch.id} className={soonKeys.has(batch.id) ? "danger-text" : ""}>{batch.expiryDate ?? "未標日期"} · {formatNumber(batch.quantity)}{item.unit}</small>)}</div>;
 }
 
-function PurchasesView({ requests, loading, loadError, canAdvance, onAdvance, onNew }: {
+function PurchasesView({ requests, loading, loadError, canAdvance, onAdvance, onSetPriority, onNew }: {
   requests: PurchaseRequest[];
   loading: boolean;
   loadError: string;
   canAdvance: boolean;
   onAdvance: (id: string, status: PurchaseStatus) => Promise<string | void>;
+  onSetPriority: (id: string, priority: PurchaseRequest["priority"]) => Promise<string | void>;
   onNew: () => void;
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -921,6 +931,16 @@ function PurchasesView({ requests, loading, loadError, canAdvance, onAdvance, on
     if (error) setActionError(error);
   };
 
+  // 只有「待確認」階段可以改急迫程度；訂購後再改沒有意義。
+  const changePriority = async (request: PurchaseRequest, priority: PurchaseRequest["priority"]) => {
+    if (request.priority === priority) return;
+    setBusyId(request.id);
+    setActionError("");
+    const error = await onSetPriority(request.id, priority);
+    setBusyId(null);
+    if (error) setActionError(error);
+  };
+
   return <><PageHeader title="採購需求" subtitle="從提出、訂購到到貨，清楚追蹤每一項採購；實際入庫請另外到「新增進貨單」建立進貨單。" button="新增採購需求" onClick={onNew} />
     {loadError && <div className="error-box">{loadError}</div>}
     {actionError && <div className="error-box">{actionError}</div>}
@@ -930,6 +950,7 @@ function PurchasesView({ requests, loading, loadError, canAdvance, onAdvance, on
       <div><strong>{r.itemName}</strong><span className="purchase-card-qty">{r.quantity} {r.unit}</span>{r.priority === "急件" && <Pill tone="red">急件</Pill>}</div>
       {r.note && <p>{r.note}</p>}
       <small>{r.requester} · {r.requestedAt}</small>
+      {status === "待確認" && canAdvance && <div className="priority-toggle" role="group" aria-label="急迫程度">{(["一般", "急件"] as const).map((p) => <button key={p} type="button" disabled={busyId === r.id} aria-pressed={r.priority === p} className={r.priority === p ? (p === "急件" ? "active urgent" : "active") : ""} onClick={() => changePriority(r, p)}>{p}</button>)}</div>}
       {status === "已到貨" && <div className="error-box">• 這裡只是提醒，不會自動增加庫存。請到「新增進貨單」輸入進貨單，庫存才會真正更新。</div>}
       {canAdvance && <button disabled={busyId === r.id} onClick={() => advance(r)}>{status === "已到貨" ? "標記已處理" : "前往下一階段"}<ChevronRight size={15} /></button>}
     </article>)}</div></section>)}</div>

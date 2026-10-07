@@ -1090,7 +1090,7 @@ function PurchaseModal({ inventory, categories, initialItem, onClose, onSave, on
         <label>大分類<select required disabled={categories.length === 0} value={newCategory} onChange={(e) => setNewCategory(e.target.value)}><option value="">請選擇</option>{categories.map((c) => <option key={c}>{c}</option>)}</select></label>
         <label>計算單位<input required value={newUnit} onChange={(e) => setNewUnit(e.target.value)} placeholder="包、瓶、公斤" /></label>
       </div>
-      <label>安全庫存<input type="number" min="0" step="1" value={newSafetyStock} onChange={(e) => setNewSafetyStock(Math.round(Number(e.target.value)))} /></label>
+      <label>安全庫存<input type="number" min="0" step="0.5" value={newSafetyStock} onChange={(e) => setNewSafetyStock(Math.max(0, roundQuantity(Number(e.target.value))))} /></label>
     </>}
 
     <div className="form-grid"><label>採購數量<input type="number" min="0.5" step="0.5" value={quantity} onChange={(e) => setQuantity(roundQuantity(Number(e.target.value)))} /></label><label>急迫程度<select value={priority} onChange={(e) => setPriority(e.target.value as "一般" | "急件")}><option>一般</option><option>急件</option></select></label></div>
@@ -1212,7 +1212,7 @@ function ItemModal({ categories, item, onClose, onSave }: {
     <label>品項名稱<input required value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：客房瓶裝水" /></label>
     {categories.length === 0 && <div className="warning-box"><span>• 目前沒有啟用中的分類，請先到「系統設定」新增或啟用分類。</span></div>}
     <div className="form-grid"><label>分類<select required disabled={categories.length === 0} value={category} onChange={(e) => setCategory(e.target.value)}>{categories.map((name) => <option key={name}>{name}</option>)}</select></label><label>計算單位<input required value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="包、瓶、公斤" /></label></div>
-    <div className="form-grid"><label>安全庫存<input type="number" min="0" step="1" value={safetyStock} onChange={(e) => setSafetyStock(Math.round(Number(e.target.value)))} /></label><label>建議採購量<input type="number" min="0" step="1" value={suggestedPurchase} onChange={(e) => setSuggestedPurchase(Math.round(Number(e.target.value)))} /></label></div>
+    <div className="form-grid"><label>安全庫存<input type="number" min="0" step="0.5" value={safetyStock} onChange={(e) => setSafetyStock(Math.max(0, roundQuantity(Number(e.target.value))))} /></label><label>建議採購量<input type="number" min="0" step="1" value={suggestedPurchase} onChange={(e) => setSuggestedPurchase(Math.round(Number(e.target.value)))} /></label></div>
     <label>供應商<input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="可稍後設定" /></label>
     <div className="setting-note">有效期限改在入庫時填寫（新增進貨單或新增異動），同一品項可以有多個不同日期。</div>
     <label className="check-label"><input type="checkbox" checked={usageForecastEnabled} onChange={(e) => setUsageForecastEnabled(e.target.checked)} />啟用預估使用量</label>

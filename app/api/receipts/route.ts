@@ -85,13 +85,13 @@ export async function POST(request: Request) {
     };
 
     if (!body.originalFileName) return NextResponse.json({ error: "缺少檔案名稱。" }, { status: 400 });
-    // 庫存數量最小單位0.5（四捨五入到0.5）；安全庫存、預估使用量仍一律整數。
+    // 庫存數量、安全庫存最小單位0.5（四捨五入到0.5）；預估使用量仍一律整數。
     const lines = (body.lines ?? []).map((line) => ({
       ...line,
       quantity: roundQuantity(line.quantity),
       newItem: line.newItem ? {
         ...line.newItem,
-        safetyStock: typeof line.newItem.safetyStock === "number" ? Math.round(line.newItem.safetyStock) : line.newItem.safetyStock,
+        safetyStock: typeof line.newItem.safetyStock === "number" ? Math.max(0, roundQuantity(line.newItem.safetyStock)) : line.newItem.safetyStock,
         estimatedUsage: typeof line.newItem.estimatedUsage === "number" ? Math.round(line.newItem.estimatedUsage) : line.newItem.estimatedUsage,
       } : line.newItem,
     }));

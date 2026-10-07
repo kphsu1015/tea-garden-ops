@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { buildUsageForecastColumns, INVENTORY_SELECT_COLUMNS, listInventoryItems, mapInventoryRow } from "@/lib/inventory";
+import { buildUsageForecastColumns, INVENTORY_SELECT_COLUMNS, listInventoryItems, mapInventoryRow, roundQuantity } from "@/lib/inventory";
 import { initialInventory } from "@/lib/demo-data";
 import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
@@ -46,8 +46,8 @@ export async function POST(request: Request) {
         name,
         category,
         base_unit: body.unit?.trim() || "個",
-        // 庫存、安全庫存一律整數，即使呼叫端傳了小數也在這裡四捨五入，不會存進小數。
-        safety_stock: Number.isFinite(body.safetyStock) ? Math.round(body.safetyStock as number) : 0,
+        // 安全庫存最小單位0.5（四捨五入到0.5），且不可為負數。
+        safety_stock: Number.isFinite(body.safetyStock) ? Math.max(0, roundQuantity(body.safetyStock as number)) : 0,
         suggested_purchase: Number.isFinite(body.suggestedPurchase) ? Math.round(body.suggestedPurchase as number) : 1,
         supplier: body.supplier?.trim() || null,
         ...forecast.columns,

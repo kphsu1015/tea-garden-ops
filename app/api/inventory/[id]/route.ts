@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { buildUsageForecastColumns, INVENTORY_SELECT_COLUMNS, mapInventoryRow } from "@/lib/inventory";
+import { buildUsageForecastColumns, INVENTORY_SELECT_COLUMNS, mapInventoryRow, roundQuantity } from "@/lib/inventory";
 import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 import type { InventoryItemInput } from "@/lib/types";
@@ -35,8 +35,8 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       updates.category = category;
     }
     if (typeof body.unit === "string") updates.base_unit = body.unit.trim() || "個";
-    // 庫存、安全庫存一律整數，即使呼叫端傳了小數也在這裡四捨五入，不會存進小數。
-    if (typeof body.safetyStock === "number" && Number.isFinite(body.safetyStock)) updates.safety_stock = Math.round(body.safetyStock);
+    // 安全庫存最小單位0.5（四捨五入到0.5），且不可為負數。
+    if (typeof body.safetyStock === "number" && Number.isFinite(body.safetyStock)) updates.safety_stock = Math.max(0, roundQuantity(body.safetyStock));
     if (typeof body.suggestedPurchase === "number" && Number.isFinite(body.suggestedPurchase)) updates.suggested_purchase = Math.round(body.suggestedPurchase);
     if (typeof body.supplier === "string") updates.supplier = body.supplier.trim() || null;
     // 有效期限改由批次決定（入庫時填、資料庫自動算出最早到期日），這裡不接受直接修改。

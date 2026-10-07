@@ -7,7 +7,7 @@ import { compressImage } from "@/lib/compress-image";
 import { PENDING_CATEGORY } from "@/lib/categories-shared";
 import { formatNumber } from "@/lib/format";
 import { generateId } from "@/lib/id";
-import { findExactInventoryMatch, findSimilarInventoryItems } from "@/lib/inventory";
+import { findExactInventoryMatch, findSimilarInventoryItems, roundQuantity } from "@/lib/inventory";
 import { formatCurrency } from "@/lib/purchase-report";
 import { calculateAmountMismatch, calculateReceiptTotals, deriveChargeAmountFromLine, splitAnalysisLines, type RawAnalysisLine } from "@/lib/receipt-calc";
 import { createClient } from "@/lib/supabase/client";
@@ -436,7 +436,7 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
             <button className="remove-line" aria-label="刪除品項" title="刪除品項" onClick={() => removeLine(line.id)}><X size={16} /></button>
             <label>品項名稱<input value={line.itemName} onChange={(e) => updateLine(line.id, { itemName: e.target.value })} /></label>
             {line.action === null && <ExistingItemPicker inventory={inventory} categories={categories} onUpdate={(patch) => updateLine(line.id, patch)} />}
-            <div className="line-grid"><label>數量<input type="number" min="1" step="1" value={line.quantity} onChange={(e) => updateLine(line.id, { quantity: Math.round(Number(e.target.value)) })} /></label><label>單位<input value={line.unit} onChange={(e) => updateLine(line.id, { unit: e.target.value })} /></label><label>金額<input type="number" min="0" value={line.totalPrice || ""} onChange={(e) => updateLine(line.id, { totalPrice: Number(e.target.value) || undefined })} /></label></div>
+            <div className="line-grid"><label>數量<input type="number" min="0.5" step="0.5" value={line.quantity} onChange={(e) => updateLine(line.id, { quantity: roundQuantity(Number(e.target.value)) })} /></label><label>單位<input value={line.unit} onChange={(e) => updateLine(line.id, { unit: e.target.value })} /></label><label>金額<input type="number" min="0" value={line.totalPrice || ""} onChange={(e) => updateLine(line.id, { totalPrice: Number(e.target.value) || undefined })} /></label></div>
             {line.action !== "ignore" && <label>有效期限（可不填，同品項不同日期請分開列）<input type="date" value={line.expiryDate ?? ""} onChange={(e) => updateLine(line.id, { expiryDate: e.target.value || undefined })} /></label>}
             <ReceiptLineMatch line={line} inventory={inventory} categories={categories} onUpdate={(patch) => updateLine(line.id, patch)} onUpdateNewItem={(patch) => updateNewItem(line.id, patch)} />
             <button type="button" className="text-button line-switch-button" onClick={() => moveLineToCharge(line.id)}>這其實是運費／其他費用，不是庫存品項</button>

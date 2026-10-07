@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isDateKey } from "@/lib/inventory";
+import { isDateKey, roundQuantity } from "@/lib/inventory";
 import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 
@@ -32,10 +32,10 @@ export async function POST(request: Request, { params }: RouteContext) {
       if (entry.expiryDate && !isDateKey(entry.expiryDate)) {
         return NextResponse.json({ error: "到期日格式不正確。" }, { status: 400 });
       }
-      // 庫存數量一律整數。
+      // 庫存數量最小單位0.5。
       counts.push(entry.batchId
-        ? { batchId: entry.batchId, actual: Math.round(entry.actual) }
-        : { expiryDate: entry.expiryDate || null, actual: Math.round(entry.actual) });
+        ? { batchId: entry.batchId, actual: roundQuantity(entry.actual) }
+        : { expiryDate: entry.expiryDate || null, actual: roundQuantity(entry.actual) });
     }
 
     const { data, error } = await supabase.rpc("stocktake_inventory_batches", {

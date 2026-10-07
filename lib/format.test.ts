@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { formatTaipeiDateLabel, getTaipeiHour, greetingForHour } from "./format";
+import { formatNumber, formatSignedNumber, formatTaipeiDateLabel, getTaipeiHour, greetingForHour } from "./format";
+
+describe("formatNumber", () => {
+  it("整數不顯示小數點，0.5等小數照實顯示", () => {
+    expect(formatNumber(3)).toBe("3");
+    expect(formatNumber(0.5)).toBe("0.5");
+    expect(formatNumber(1.5)).toBe("1.5");
+    expect(formatNumber(1200)).toBe("1,200");
+  });
+  it("差異數量帶正負號，可顯示0.5", () => {
+    expect(formatSignedNumber(0.5)).toBe("+0.5");
+    expect(formatSignedNumber(-1.5)).toBe("-1.5");
+    expect(formatSignedNumber(0)).toBe("0");
+  });
+});
 
 describe("greetingForHour", () => {
   it("5:00-11:59 顯示早安", () => {

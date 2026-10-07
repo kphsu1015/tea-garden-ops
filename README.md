@@ -33,7 +33,7 @@ npm run dev
 ## 正式Supabase設定
 
 1. 建立Supabase專案。
-2. 在SQL Editor依序執行 `supabase/schema.sql`，再執行 `supabase/migrations/0001_inventory_category_management.sql`（新增分類排序／啟用欄位並寫入預設分類）。之後依編號順序執行 `supabase/migrations/` 內其餘檔案（目前到 `0014_inventory_expiry_batches.sql`：把庫存改成依有效期限分批，既有庫存會自動轉成一批）。
+2. 在SQL Editor依序執行 `supabase/schema.sql`，再執行 `supabase/migrations/0001_inventory_category_management.sql`（新增分類排序／啟用欄位並寫入預設分類）。之後依編號順序執行 `supabase/migrations/` 內其餘檔案（目前到 `0015_stocktake_half_quantity.sql`：盤點數量可輸入0.5；`0014` 把庫存改成依有效期限分批，既有庫存會自動轉成一批）。
 3. 複製 `.env.example` 為 `.env.local`。
 4. 填入：
 

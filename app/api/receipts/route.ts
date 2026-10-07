@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isDateKey } from "@/lib/inventory";
+import { isDateKey, roundQuantity } from "@/lib/inventory";
 import { getReceiptRetentionDays, mapReceiptRow, RECEIPT_SELECT_COLUMNS } from "@/lib/shared-records";
 import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
@@ -85,10 +85,10 @@ export async function POST(request: Request) {
     };
 
     if (!body.originalFileName) return NextResponse.json({ error: "缺少檔案名稱。" }, { status: 400 });
-    // 庫存數量、安全庫存、預估使用量一律整數，即使呼叫端傳了小數也在這裡四捨五入，不會存進小數。
+    // 庫存數量最小單位0.5（四捨五入到0.5）；安全庫存、預估使用量仍一律整數。
     const lines = (body.lines ?? []).map((line) => ({
       ...line,
-      quantity: Math.round(line.quantity),
+      quantity: roundQuantity(line.quantity),
       newItem: line.newItem ? {
         ...line.newItem,
         safetyStock: typeof line.newItem.safetyStock === "number" ? Math.round(line.newItem.safetyStock) : line.newItem.safetyStock,

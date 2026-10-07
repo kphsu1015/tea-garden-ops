@@ -153,6 +153,12 @@ export function estimatedRemainingLabel(item: Pick<InventoryItem, "quantity" | "
   return `預估可使用${rounded}${PERIOD_UNIT_LABEL[period]}`;
 }
 
+// 庫存數量（異動、盤點、採購、進貨單）最小單位為0.5，例如0.5包、1.5公斤；傳入其他小數會四捨五入到最接近的0.5。
+export const QUANTITY_STEP = 0.5;
+export function roundQuantity(value: number): number {
+  return Math.round(value / QUANTITY_STEP) * QUANTITY_STEP;
+}
+
 // --- 即將過期批次（純函式，前後端共用） ---
 
 export const EXPIRY_WARNING_DAYS = 14;

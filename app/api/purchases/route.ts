@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { roundQuantity } from "@/lib/inventory";
 import { mapPurchaseRow, PURCHASE_SELECT_COLUMNS } from "@/lib/shared-records";
 import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
@@ -40,7 +41,7 @@ export async function POST(request: Request) {
     };
     const itemName = body.itemName?.trim();
     const unit = body.unit?.trim();
-    const quantity = Math.round(Number(body.quantity));
+    const quantity = roundQuantity(Number(body.quantity));
     if (!itemName) return NextResponse.json({ error: "請選擇或輸入品項。" }, { status: 400 });
     if (!unit) return NextResponse.json({ error: "缺少計算單位。" }, { status: 400 });
     if (!Number.isFinite(quantity) || quantity <= 0) return NextResponse.json({ error: "採購數量必須大於0。" }, { status: 400 });

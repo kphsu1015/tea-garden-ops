@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { expiryLabel, getExpiringBatches, sortBatches } from "./inventory";
+import { expiryLabel, getExpiringBatches, roundQuantity, sortBatches } from "./inventory";
 import type { InventoryBatch, InventoryItem } from "./types";
+
+describe("roundQuantity", () => {
+  it("庫存數量四捨五入到最接近的0.5", () => {
+    expect(roundQuantity(0.5)).toBe(0.5);
+    expect(roundQuantity(1.2)).toBe(1);
+    expect(roundQuantity(1.3)).toBe(1.5);
+    expect(roundQuantity(2)).toBe(2);
+    expect(roundQuantity(0.2)).toBe(0);
+    expect(roundQuantity(-1.5)).toBe(-1.5);
+  });
+});
 
 function batch(id: string, expiryDate: string | null, quantity: number, createdAt = "2026-09-01T00:00:00Z"): InventoryBatch {
   return { id, expiryDate, quantity, createdAt };

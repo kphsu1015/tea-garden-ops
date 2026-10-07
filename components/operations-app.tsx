@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { initialNotes, initialPurchases } from "@/lib/demo-data";
-import { EXPIRY_WARNING_DAYS, estimatedRemainingLabel, expiryLabel, getExpiringBatches, getLowStockReason, lowStockReasonLabel, MOVEMENT_TYPE_DEFAULT_DIRECTION, MOVEMENT_TYPE_ENUM, periodFrequencyLabel, taipeiDateKey, type ExpiringBatch } from "@/lib/inventory";
+import { EXPIRY_WARNING_DAYS, estimatedRemainingLabel, expiryLabel, getExpiringBatches, getLowStockReason, lowStockReasonLabel, MOVEMENT_TYPE_DEFAULT_DIRECTION, MOVEMENT_TYPE_ENUM, periodFrequencyLabel, roundQuantity, taipeiDateKey, type ExpiringBatch } from "@/lib/inventory";
 import type { StockMovementRecord } from "@/lib/movements";
 import { formatNumber, formatSignedNumber, formatTaipeiDateLabel, getTaipeiHour, greetingForHour } from "@/lib/format";
 import { generateId } from "@/lib/id";
@@ -1093,7 +1093,7 @@ function PurchaseModal({ inventory, categories, initialItem, onClose, onSave, on
       <label>安全庫存<input type="number" min="0" step="1" value={newSafetyStock} onChange={(e) => setNewSafetyStock(Math.round(Number(e.target.value)))} /></label>
     </>}
 
-    <div className="form-grid"><label>採購數量<input type="number" min="1" step="1" value={quantity} onChange={(e) => setQuantity(Math.round(Number(e.target.value)))} /></label><label>急迫程度<select value={priority} onChange={(e) => setPriority(e.target.value as "一般" | "急件")}><option>一般</option><option>急件</option></select></label></div>
+    <div className="form-grid"><label>採購數量<input type="number" min="0.5" step="0.5" value={quantity} onChange={(e) => setQuantity(roundQuantity(Number(e.target.value)))} /></label><label>急迫程度<select value={priority} onChange={(e) => setPriority(e.target.value as "一般" | "急件")}><option>一般</option><option>急件</option></select></label></div>
     <label>原因或備註<textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：明天有12位早餐客人" /></label>
     {error && <div className="error-box">{error}</div>}
     <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={submitting}>{submitting ? "建立中…" : "送出採購需求"}</button></div>
@@ -1152,7 +1152,7 @@ function MovementEntryModal({ item, onClose, onConfirm }: {
     <label>異動類型<select value={type} onChange={(e) => { setType(e.target.value as MovementType); setBatchId(AUTO_BATCH); }}>{MOVEMENT_TYPES.map((t) => <option key={t}>{t}</option>)}</select></label>
     <div className="form-grid">
       <label>方向<select value={effectiveDirection} disabled={Boolean(fixedDirection)} onChange={(e) => setDirection(e.target.value as "increase" | "decrease")}><option value="increase">增加</option><option value="decrease">減少</option></select></label>
-      <label>數量（{item.unit}）<input type="number" min="1" step="1" value={amount} onChange={(e) => setAmount(Math.round(Number(e.target.value)))} /></label>
+      <label>數量（{item.unit}）<input type="number" min="0.5" step="0.5" value={amount} onChange={(e) => setAmount(roundQuantity(Number(e.target.value)))} /></label>
     </div>
     {effectiveDirection === "increase"
       ? <label>這批的有效期限（可不填；跟現有批次同一天會併在一起）<input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} /></label>
@@ -1270,11 +1270,11 @@ function StockCountModal({ item, onClose, onConfirm }: { item: InventoryItem; on
   const [error, setError] = useState("");
 
   const batchCounts = item.batches
-    .filter((b) => Math.round(actuals[b.id] ?? b.quantity) !== b.quantity)
-    .map((b) => ({ batchId: b.id, actual: Math.round(actuals[b.id] ?? b.quantity) }));
-  const extraCounts = extraRows.filter((row) => row.actual > 0).map((row) => ({ expiryDate: row.expiryDate || undefined, actual: Math.round(row.actual) }));
+    .filter((b) => roundQuantity(actuals[b.id] ?? b.quantity) !== b.quantity)
+    .map((b) => ({ batchId: b.id, actual: roundQuantity(actuals[b.id] ?? b.quantity) }));
+  const extraCounts = extraRows.filter((row) => row.actual > 0).map((row) => ({ expiryDate: row.expiryDate || undefined, actual: roundQuantity(row.actual) }));
   const counts: StocktakeCount[] = [...batchCounts, ...extraCounts];
-  const newTotal = item.batches.reduce((sum, b) => sum + Math.round(actuals[b.id] ?? b.quantity), 0) + extraCounts.reduce((sum, c) => sum + c.actual, 0);
+  const newTotal = item.batches.reduce((sum, b) => sum + roundQuantity(actuals[b.id] ?? b.quantity), 0) + extraCounts.reduce((sum, c) => sum + c.actual, 0);
   const diff = newTotal - item.quantity;
 
   const submit = async (e: React.FormEvent) => {
@@ -1290,11 +1290,11 @@ function StockCountModal({ item, onClose, onConfirm }: { item: InventoryItem; on
   return <ModalShell title="盤點／修正庫存" subtitle={`品項：${item.name}`} onClose={onClose}><form onSubmit={submit}>
     <div className="stock-hint">系統目前數量：{formatNumber(item.quantity)} {item.unit}{item.batches.length > 1 ? `（${item.batches.length}批）` : ""}</div>
     {item.batches.map((b) => <label key={b.id}>{b.expiryDate ? `${b.expiryDate} 到期` : "未標日期"}：系統 {formatNumber(b.quantity)}{item.unit}，實際
-      <input type="number" min="0" step="1" value={actuals[b.id] ?? b.quantity} onChange={(e) => setActuals({ ...actuals, [b.id]: Math.max(0, Math.round(Number(e.target.value))) })} />
+      <input type="number" min="0" step="0.5" value={actuals[b.id] ?? b.quantity} onChange={(e) => setActuals({ ...actuals, [b.id]: Math.max(0, roundQuantity(Number(e.target.value))) })} />
     </label>)}
     {extraRows.map((row) => <div key={row.id} className="form-grid">
       <label>多找到的有效期限（可不填）<input type="date" value={row.expiryDate} onChange={(e) => setExtraRows(extraRows.map((r) => r.id === row.id ? { ...r, expiryDate: e.target.value } : r))} /></label>
-      <label>數量（{item.unit}）<input type="number" min="0" step="1" value={row.actual} onChange={(e) => setExtraRows(extraRows.map((r) => r.id === row.id ? { ...r, actual: Math.max(0, Math.round(Number(e.target.value))) } : r))} /></label>
+      <label>數量（{item.unit}）<input type="number" min="0" step="0.5" value={row.actual} onChange={(e) => setExtraRows(extraRows.map((r) => r.id === row.id ? { ...r, actual: Math.max(0, roundQuantity(Number(e.target.value))) } : r))} /></label>
     </div>)}
     <button type="button" className="text-button" onClick={() => setExtraRows([...extraRows, { id: generateId(), expiryDate: "", actual: 1 }])}><Plus size={15} />{item.batches.length === 0 ? "新增庫存（含有效期限）" : "新增一個日期（盤點時多找到的）"}</button>
     {counts.length === 0 ? <div className="setting-note">庫存數量一致，不需要建立異動紀錄。</div> : <div className={`stock-hint ${diff > 0 ? "positive-text" : diff < 0 ? "danger-text" : ""}`}>盤點後總數：{formatNumber(newTotal)} {item.unit}（差異 {formatSignedNumber(diff)}）</div>}

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isDateKey } from "@/lib/inventory";
+import { isDateKey, roundQuantity } from "@/lib/inventory";
 import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 
@@ -26,8 +26,8 @@ export async function POST(request: Request, { params }: RouteContext) {
     if (typeof body.changeAmount !== "number" || !Number.isFinite(body.changeAmount)) {
       return NextResponse.json({ error: "差異數量必須是不為0的數字。" }, { status: 400 });
     }
-    // 庫存數量一律整數，即使呼叫端傳了小數也在這裡四捨五入；四捨五入後若變成0視同沒有差異，直接拒絕。
-    const changeAmount = Math.round(body.changeAmount);
+    // 庫存數量最小單位0.5，呼叫端傳了其他小數也在這裡四捨五入到0.5；四捨五入後若變成0視同沒有差異，直接拒絕。
+    const changeAmount = roundQuantity(body.changeAmount);
     if (changeAmount === 0) {
       return NextResponse.json({ error: "差異數量必須是不為0的數字。" }, { status: 400 });
     }

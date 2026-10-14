@@ -90,6 +90,16 @@ export async function listInventoryItems(supabase: SupabaseClient): Promise<Inve
   return ((data ?? []) as InventoryItemRow[]).map(mapInventoryRow);
 }
 
+// 品項名稱撞到unique限制時的錯誤訊息：停用品項在列表預設隱藏、搜尋也找不到，
+// 所以要明確告訴使用者同名品項是停用狀態，請勾選「顯示停用品項」後重新啟用。
+export async function duplicateItemNameMessage(supabase: SupabaseClient, name: string): Promise<string> {
+  const { data } = await supabase.from("inventory_items").select("active").eq("name", name).maybeSingle();
+  if (data && data.active === false) {
+    return `已有同名品項「${name}」，但目前是停用狀態（列表預設不顯示）。請在庫存管理勾選「顯示停用品項」，找到後由管理員重新啟用即可。`;
+  }
+  return `已有相同名稱的品項「${name}」。`;
+}
+
 // 依表單輸入組出要寫入的欄位；usageForecastEnabled未提供時視為「這次更新不動預估使用量」。
 export function buildUsageForecastColumns(input: { usageForecastEnabled?: boolean; estimatedUsage?: number; usagePeriod?: string }): { columns: Record<string, unknown> } | { error: string } {
   if (typeof input.usageForecastEnabled !== "boolean") return { columns: {} };

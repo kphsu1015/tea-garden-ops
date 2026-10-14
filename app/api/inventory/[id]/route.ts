@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { buildUsageForecastColumns, INVENTORY_SELECT_COLUMNS, mapInventoryRow, roundQuantity } from "@/lib/inventory";
+import { buildUsageForecastColumns, duplicateItemNameMessage, INVENTORY_SELECT_COLUMNS, mapInventoryRow, roundQuantity } from "@/lib/inventory";
 import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 import type { InventoryItemInput } from "@/lib/types";
@@ -54,7 +54,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       .eq("id", id)
       .select(INVENTORY_SELECT_COLUMNS);
     if (error) {
-      if (error.code === "23505") return NextResponse.json({ error: "已有相同名稱的品項。" }, { status: 409 });
+      if (error.code === "23505") return NextResponse.json({ error: typeof updates.name === "string" ? await duplicateItemNameMessage(supabase, updates.name) : "已有相同名稱的品項。" }, { status: 409 });
       if (error.code === "42501") return NextResponse.json({ error: WRITE_FORBIDDEN_MESSAGE }, { status: 403 });
       if (error.code === "P0001") return NextResponse.json({ error: REACTIVATE_FORBIDDEN_MESSAGE }, { status: 403 });
       if (error.code === "23514") return NextResponse.json({ error: "預估使用量設定不正確，請確認啟用時數量與週期都已填寫。" }, { status: 400 });

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { buildUsageForecastColumns, INVENTORY_SELECT_COLUMNS, listInventoryItems, mapInventoryRow, roundQuantity } from "@/lib/inventory";
+import { buildUsageForecastColumns, duplicateItemNameMessage, INVENTORY_SELECT_COLUMNS, listInventoryItems, mapInventoryRow, roundQuantity } from "@/lib/inventory";
 import { initialInventory } from "@/lib/demo-data";
 import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
@@ -55,7 +55,7 @@ export async function POST(request: Request) {
       .select(INVENTORY_SELECT_COLUMNS)
       .single();
     if (error) {
-      if (error.code === "23505") return NextResponse.json({ error: "已有相同名稱的品項。" }, { status: 409 });
+      if (error.code === "23505") return NextResponse.json({ error: await duplicateItemNameMessage(supabase, name) }, { status: 409 });
       if (error.code === "42501") return NextResponse.json({ error: "只有管理員或訂貨管家可以新增品項。" }, { status: 403 });
       if (error.code === "23514") return NextResponse.json({ error: "預估使用量設定不正確，請確認啟用時數量與週期都已填寫。" }, { status: 400 });
       throw error;

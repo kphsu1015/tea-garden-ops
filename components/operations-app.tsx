@@ -3,7 +3,7 @@
 import {
   AlertTriangle, Archive, BarChart3, Bell, Box, ChevronRight, ClipboardCheck, ClipboardList,
   Clock3, Eye, EyeOff, FileScan, History, LogOut, Menu, MessageSquareText, Pencil, Plus, Power, Search, Settings,
-  ShoppingCart, Trash2, Users, X
+  MoreHorizontal, ShoppingCart, Trash2, Undo2, Users, X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { initialNotes, initialPurchases } from "@/lib/demo-data";
@@ -315,6 +315,8 @@ export function OperationsApp() {
   const [movingItem, setMovingItem] = useState<InventoryItem | null>(null);
   const [deletingNote, setDeletingNote] = useState<HandoverNote | null>(null);
   const [query, setQuery] = useState("");
+  // 庫存頁的篩選：從總覽點「低庫存」「即將過期」進來時直接套用；從側邊選單進來回到「全部」。
+  const [inventoryFilter, setInventoryFilter] = useState<StockFilter>("all");
   const inventoryState = useInventory();
   const categoryState = useCategories();
 
@@ -407,7 +409,8 @@ export function OperationsApp() {
   const inventory = inventoryState.items;
   const activeInventory = useMemo(() => inventory.filter((item) => item.active), [inventory]);
   const canManageItems = role === "admin" || role === "purchaser";
-  const canReactivateOrDeleteItems = role === "admin";
+  // 重新啟用停用品項、永久刪除品項：管理員與訂貨管家（需先在Supabase執行 0016 migration）。
+  const canReactivateOrDeleteItems = role === "admin" || role === "purchaser";
   const canCountStock = role === "admin" || role === "purchaser" || role === "housekeeper";
   const canViewPurchaseReport = role === "admin" || role === "purchaser";
 
@@ -442,7 +445,9 @@ export function OperationsApp() {
   }
   if (!isLoggedIn) return <LoginScreen supabaseConfigured={session.configured} onDemoLogin={() => setDemoLoggedIn(true)} unauthorized={rejected} />;
 
-  const openView = (next: View) => { setView(next); setMobileNav(false); };
+  const openView = (next: View) => { setView(next); setMobileNav(false); if (next === "inventory") setInventoryFilter("all"); };
+  // 從總覽點卡片進來：清掉之前的搜尋字，不然結果會跟卡片上的數字對不上。
+  const openInventory = (filter: StockFilter) => { setView("inventory"); setMobileNav(false); setInventoryFilter(filter); setQuery(""); };
   const handleLogout = () => { if (session.configured) session.signOut(); else setDemoLoggedIn(false); };
 
   return (
@@ -483,9 +488,11 @@ export function OperationsApp() {
         </header>
 
         <section className="content">
-          {view === "dashboard" && <Dashboard lowStock={lowStock} pending={pending} expiring={expiring} notes={notes} onView={openView} onPurchase={() => openPurchaseModal()} />}
+          {view === "dashboard" && <Dashboard lowStock={lowStock} pending={pending} expiring={expiring} notes={notes} onView={openView} onInventory={openInventory} onPurchase={() => openPurchaseModal()} />}
           {view === "inventory" && <InventoryView
             items={inventory}
+            filter={inventoryFilter}
+            setFilter={setInventoryFilter}
             loading={inventoryState.loading}
             error={inventoryState.error}
             demo={inventoryState.demo}
@@ -813,25 +820,25 @@ function UserMenu({ email, displayName, role, demo, onSaved }: {
   </div>;
 }
 
-function Dashboard({ lowStock, pending, expiring, notes, onView, onPurchase }: { lowStock: InventoryItem[]; pending: PurchaseRequest[]; expiring: ExpiringBatch[]; notes: HandoverNote[]; onView: (v: View) => void; onPurchase: () => void }) {
+function Dashboard({ lowStock, pending, expiring, notes, onView, onInventory, onPurchase }: { lowStock: InventoryItem[]; pending: PurchaseRequest[]; expiring: ExpiringBatch[]; notes: HandoverNote[]; onView: (v: View) => void; onInventory: (filter: StockFilter) => void; onPurchase: () => void }) {
   const now = new Date();
   const greeting = greetingForHour(getTaipeiHour(now));
   return <>
     <div className="hero-row"><div><p>{formatTaipeiDateLabel(now)}</p><h1>{greeting}，今天有 <em>{lowStock.length}</em> 項庫存需要注意</h1></div><button className="primary-button" onClick={onPurchase}><Plus size={19} />新增採購需求</button></div>
     <div className="stat-grid">
-      <Stat icon={AlertTriangle} label="低庫存" value={lowStock.length} tone="red" onClick={() => onView("inventory")} />
+      <Stat icon={AlertTriangle} label="低庫存" value={lowStock.length} tone="red" onClick={() => onInventory("low")} />
       <Stat icon={ShoppingCart} label="待處理採購" value={pending.length} tone="sage" onClick={() => onView("purchases")} />
-      <Stat icon={Clock3} label="即將過期" value={expiring.length} tone="gold" onClick={() => onView("inventory")} />
+      <Stat icon={Clock3} label="即將過期" value={expiring.length} tone="gold" onClick={() => onInventory("expiring")} />
       <Stat icon={MessageSquareText} label="交接留言" value={notes.length} tone="blue" onClick={() => onView("notes")} />
     </div>
     <div className="dashboard-grid">
-      <Panel title="低庫存品項" icon={Box} action="查看全部" onAction={() => onView("inventory")}>
+      <Panel title="低庫存品項" icon={Box} action="查看全部" onAction={() => onInventory("low")}>
         <div className="compact-list">{lowStock.slice(0, 5).map((item) => <div key={item.id}><span className="item-avatar">{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{item.category}</small></div><b>{formatNumber(item.quantity)}{item.unit}</b><span>安全 {formatNumber(item.safetyStock)}{item.unit}</span></div>)}</div>
       </Panel>
       <Panel title="待處理採購" icon={ShoppingCart} action="管理採購" onAction={() => onView("purchases")}>
         <div className="compact-list">{pending.slice(0, 5).map((r) => <div key={r.id}><span className="item-avatar">購</span><div><strong>{r.itemName}</strong><small>{r.requester} · {r.requestedAt.slice(5, 10)}</small></div><b>{r.quantity}{r.unit}</b><Status status={r.status} /></div>)}</div>
       </Panel>
-      <Panel title="即將過期食材" icon={Clock3} action="查看庫存" onAction={() => onView("inventory")}>
+      <Panel title="即將過期食材" icon={Clock3} action="查看庫存" onAction={() => onInventory("expiring")}>
         <div className="expiry-list">{expiring.length === 0 ? <p className="notif-empty">{EXPIRY_WINDOW_LABEL}內沒有到期的批次。</p> : expiring.slice(0, 6).map(({ item, batch, expiryDate, daysLeft }) => <div key={batch.id}><div><strong>{item.name}</strong><small>這批 {formatNumber(batch.quantity)}{item.unit} · {expiryDate} 到期</small></div><Pill tone={daysLeft < 0 ? "red" : "gold"}>{expiryLabel(daysLeft)}</Pill></div>)}</div>
       </Panel>
       <Panel title="最新交接留言" icon={MessageSquareText} action="查看留言" onAction={() => onView("notes")}>
@@ -853,8 +860,13 @@ function PageHeader({ title, subtitle, button, onClick }: { title: string; subti
   return <div className="section-header"><div><h1>{title}</h1><p>{subtitle}</p></div>{button && <button className="primary-button" onClick={onClick}><Plus size={18} />{button}</button>}</div>;
 }
 
-function InventoryView({ items, loading, error, demo, categories, query, setQuery, canManage, canReactivateOrDelete, canCount, onAddItem, onEditItem, onToggleActive, onDeleteItem, onCountItem, onAddMovement, onPurchase }: {
+type StockFilter = "all" | "low" | "expiring";
+const STOCK_FILTERS: Array<{ id: StockFilter; label: string }> = [{ id: "all", label: "全部" }, { id: "low", label: "低庫存" }, { id: "expiring", label: "快到期" }];
+
+function InventoryView({ items, filter, setFilter, loading, error, demo, categories, query, setQuery, canManage, canReactivateOrDelete, canCount, onAddItem, onEditItem, onToggleActive, onDeleteItem, onCountItem, onAddMovement, onPurchase }: {
   items: InventoryItem[];
+  filter: StockFilter;
+  setFilter: (f: StockFilter) => void;
   loading: boolean;
   error: string;
   demo: boolean;
@@ -866,37 +878,148 @@ function InventoryView({ items, loading, error, demo, categories, query, setQuer
   canCount: boolean;
   onAddItem: () => void;
   onEditItem: (item: InventoryItem) => void;
-  onToggleActive: (item: InventoryItem) => void;
+  onToggleActive: (item: InventoryItem) => Promise<string | void>;
   onDeleteItem: (item: InventoryItem) => void;
   onCountItem: (item: InventoryItem) => void;
   onAddMovement: (item: InventoryItem) => void;
   onPurchase: (name: string) => void;
 }) {
   const [category, setCategory] = useState("全部");
+  // 停用／啟用後的提示：停用的品項會從清單消失（預設不顯示停用品項），要讓員工知道發生什麼事，也可以馬上復原。
+  const [toggleNotice, setToggleNotice] = useState<{ item: InventoryItem; nowActive: boolean; error?: string; undoFailed?: boolean } | null>(null);
+  // 只採用最後一次操作的結果：連續停用／復原時，晚回來的舊結果不會蓋掉新的提示。
+  const toggleSeq = useRef(0);
+  const toggleActive = async (item: InventoryItem) => {
+    const seq = ++toggleSeq.current;
+    const err = await onToggleActive(item);
+    if (seq !== toggleSeq.current) return;
+    setToggleNotice(err ? { item, nowActive: item.active, error: err } : { item, nowActive: !item.active });
+  };
+  const undoToggle = async () => {
+    if (!toggleNotice) return;
+    const { item, nowActive } = toggleNotice;
+    const seq = ++toggleSeq.current;
+    const err = await onToggleActive({ ...item, active: nowActive });
+    if (seq !== toggleSeq.current) return;
+    setToggleNotice(err ? { item, nowActive, error: err, undoFailed: true } : null);
+  };
+  // 停用之後要「復原」＝重新啟用，需要有啟用權限；沒有權限就不顯示復原按鈕。復原失敗時可以再試一次。
+  const canUndo = toggleNotice && (!toggleNotice.error || toggleNotice.undoFailed) && (toggleNotice.nowActive ? canManage : canReactivateOrDelete);
   const [showInactive, setShowInactive] = useState(false);
-  const visible = showInactive ? items : items.filter((item) => item.active);
-  const filtered = visible.filter((item) => (category === "全部" || item.category === category) && item.name.includes(query));
   const todayKey = taipeiDateKey();
+  const visible = showInactive ? items : items.filter((item) => item.active);
+  // 搜尋：品名或供應商，不分大小寫、前後空白不算。
+  const q = query.trim().toLowerCase();
+  const searched = visible.filter((item) => (category === "全部" || item.category === category) && (!q || `${item.name} ${item.supplier ?? ""}`.toLowerCase().includes(q)));
+  const expiringIds = new Set(getExpiringBatches(searched, todayKey).map((entry) => entry.item.id));
+  const isLow = (item: InventoryItem) => item.active && Boolean(getLowStockReason(item));
+  const counts = { all: searched.length, low: searched.filter(isLow).length, expiring: searched.filter((item) => expiringIds.has(item.id)).length };
+  // 排序：低庫存在最上面，再來是快到期，其他照原本順序。
+  const rank = (item: InventoryItem) => isLow(item) ? 0 : expiringIds.has(item.id) ? 1 : 2;
+  const filtered = searched
+    .filter((item) => filter === "all" || (filter === "low" ? isLow(item) : expiringIds.has(item.id)))
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => rank(a.item) - rank(b.item) || a.index - b.index)
+    .map(({ item }) => item);
+  const narrowing = [q ? `搜尋「${query.trim()}」` : "", category !== "全部" ? `分類「${category}」` : "", filter !== "all" ? `只看「${STOCK_FILTERS.find((f) => f.id === filter)?.label}」` : ""].filter(Boolean);
+  const clearFilters = () => { setQuery(""); setCategory("全部"); setFilter("all"); };
+  const emptyTitle = items.length === 0 ? "還沒有任何庫存品項"
+    : filter === "low" && narrowing.length === 1 ? "目前沒有低庫存的品項"
+    : filter === "expiring" && narrowing.length === 1 ? `${EXPIRY_WINDOW_LABEL}內沒有快到期的批次`
+    : "找不到符合的品項";
   return <><div className="section-header"><div><h1>庫存管理</h1><p>掌握各區備品與食材數量，低於安全庫存或預估用量不足時立即提醒。</p></div><div className="header-actions"><button className="primary-button" onClick={onAddItem} disabled={!canManage}><Plus size={18} />新增品項</button></div></div>
     {demo && <div className="warning-box"><span>• 尚未設定Supabase，目前僅顯示唯讀示範庫存，無法新增／編輯／停用／刪除／盤點。</span></div>}
     {error && <div className="error-box">{error}</div>}
-    <div className="toolbar"><div className="search-box"><Search size={18} /><input placeholder="搜尋品項" value={query} onChange={(e) => setQuery(e.target.value)} /></div><select value={category} onChange={(e) => setCategory(e.target.value)}><option>全部</option>{categories.map((name) => <option key={name}>{name}</option>)}</select><label className="check-label inline-check"><input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />顯示停用品項</label></div>
-    {loading ? <p>載入庫存中…</p> : <div className="table-card"><table><thead><tr><th>品項</th><th>分類</th><th>目前庫存</th><th>安全庫存</th><th>預估使用</th><th>有效期限</th><th>狀態</th><th>低庫存原因</th><th>操作</th></tr></thead><tbody>{filtered.map((item) => {
-      const reason = getLowStockReason(item);
-      const remaining = estimatedRemainingLabel(item);
-      return <tr key={item.id} className={item.active ? "" : "inventory-row-inactive"}>
-        <td><strong>{item.name}</strong><small>{item.supplier || "未設定供應商"}</small></td>
-        <td>{item.category}</td>
-        <td><b className={reason ? "danger-text" : ""}>{formatNumber(item.quantity)} {item.unit}</b></td>
-        <td>{formatNumber(item.safetyStock)} {item.unit}</td>
-        <td>{item.usageForecastEnabled && item.estimatedUsage && item.usagePeriod ? <><strong>{periodFrequencyLabel(item.usagePeriod)}{formatNumber(item.estimatedUsage)}{item.unit}</strong><small>{remaining}</small></> : <small>未啟用</small>}</td>
-        <td><BatchExpiryList item={item} todayKey={todayKey} /></td>
-        <td>{!item.active ? <Pill tone="red">已停用</Pill> : reason ? <Pill tone="red">低庫存</Pill> : <Pill>充足</Pill>}</td>
-        <td>{reason ? <small className="danger-text">{lowStockReasonLabel(reason)}</small> : "—"}</td>
-        <td><div className="row-actions">{item.active && <button className="text-button" onClick={() => onPurchase(item.name)}>提出採購</button>}<button aria-label={`盤點${item.name}`} title={`盤點${item.name}`} disabled={!canCount} onClick={() => onCountItem(item)}><ClipboardCheck size={15} /></button><button aria-label={`新增${item.name}異動`} title={`新增${item.name}異動`} disabled={!canCount} onClick={() => onAddMovement(item)}><ClipboardList size={15} /></button><button aria-label={`編輯${item.name}`} title={`編輯${item.name}`} disabled={!canManage} onClick={() => onEditItem(item)}><Pencil size={15} /></button><button aria-label={item.active ? `停用${item.name}` : `啟用${item.name}`} title={item.active ? `停用${item.name}` : `啟用${item.name}`} disabled={item.active ? !canManage : !canReactivateOrDelete} onClick={() => onToggleActive(item)}><Power size={15} /></button><button className="danger" aria-label={`刪除${item.name}`} title={`刪除${item.name}`} disabled={!canReactivateOrDelete} onClick={() => onDeleteItem(item)}><Trash2 size={15} /></button></div></td>
-      </tr>;
-    })}</tbody></table></div>}
+    {toggleNotice && <div className={toggleNotice.error ? "error-box inventory-notice" : "inventory-notice"} role={toggleNotice.error ? "alert" : "status"}>
+      <span>{toggleNotice.error ? `「${toggleNotice.item.name}」${toggleNotice.undoFailed ? "復原" : toggleNotice.item.active ? "停用" : "啟用"}失敗：${toggleNotice.error}` : toggleNotice.nowActive ? `已重新啟用「${toggleNotice.item.name}」` : `已停用「${toggleNotice.item.name}」，它不會再出現在清單和低庫存提醒裡。勾選「顯示停用品項」可以看到它。`}</span>
+      {canUndo && <button type="button" className="text-button" onClick={undoToggle}><Undo2 size={14} />{toggleNotice.undoFailed ? "再試一次" : "復原"}</button>}
+      <button type="button" className="notice-close" aria-label="關閉提示" title="關閉提示" onClick={() => setToggleNotice(null)}><X size={14} /></button>
+    </div>}
+    <div className="toolbar">
+      <div className="stock-filter" role="group" aria-label="篩選庫存">{STOCK_FILTERS.map((f) => <button key={f.id} type="button" aria-pressed={filter === f.id} className={filter === f.id ? "active" : ""} onClick={() => setFilter(f.id)}>{f.label}<span>{counts[f.id]}</span></button>)}</div>
+      <div className="search-box"><Search size={18} /><input placeholder="搜尋品項或供應商" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="搜尋品項或供應商" /></div>
+      <select value={category} onChange={(e) => setCategory(e.target.value)} aria-label="分類"><option>全部</option>{categories.map((name) => <option key={name}>{name}</option>)}</select>
+      <label className="check-label inline-check"><input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />顯示停用品項</label>
+    </div>
+    {loading ? <p>載入庫存中…</p> : <div className="table-card"><table className="inventory-table"><thead><tr><th>品項</th><th>分類</th><th>目前庫存</th><th>預估使用</th><th>有效期限</th><th>狀態</th><th>操作</th></tr></thead><tbody>
+      {filtered.length === 0 && <tr className="inventory-empty"><td colSpan={7}>
+        <strong>{emptyTitle}</strong>
+        {items.length === 0
+          ? (canManage && <button type="button" className="secondary-button" onClick={onAddItem}><Plus size={15} />新增第一個品項</button>)
+          : narrowing.length > 0 && <span>目前條件：{narrowing.join("、")}<button type="button" className="text-button" onClick={clearFilters}>清除篩選，顯示全部</button></span>}
+      </td></tr>}
+      {filtered.map((item) => {
+        const reason = getLowStockReason(item);
+        const remaining = estimatedRemainingLabel(item);
+        return <tr key={item.id} className={item.active ? "" : "inventory-row-inactive"}>
+          <td data-label="品項"><strong>{item.name}</strong><small>{item.supplier || "未設定供應商"}</small></td>
+          <td data-label="分類">{item.category}</td>
+          <td data-label="目前庫存"><b className={reason ? "danger-text" : ""}>{formatNumber(item.quantity)} {item.unit}</b><small>安全庫存 {formatNumber(item.safetyStock)} {item.unit}</small></td>
+          <td data-label="預估使用">{item.usageForecastEnabled && item.estimatedUsage && item.usagePeriod ? <><strong>{periodFrequencyLabel(item.usagePeriod)}{formatNumber(item.estimatedUsage)}{item.unit}</strong><small>{remaining}</small></> : <small>未啟用</small>}</td>
+          <td data-label="有效期限"><BatchExpiryList item={item} todayKey={todayKey} /></td>
+          <td data-label="狀態">{!item.active ? <Pill tone="red">已停用</Pill> : reason ? <div className="status-cell"><Pill tone="red">低庫存</Pill><small className="danger-text">{lowStockReasonLabel(reason)}</small></div> : expiringIds.has(item.id) ? <Pill tone="gold">快到期</Pill> : <Pill>充足</Pill>}</td>
+          <td data-label="操作"><div className="row-actions">
+            {item.active && <button type="button" className="row-text-button" onClick={() => onPurchase(item.name)}><ShoppingCart size={14} />採購</button>}
+            <button type="button" className="row-text-button" disabled={!canCount} onClick={() => onCountItem(item)} title={canCount ? undefined : "你的帳號沒有盤點權限"}><ClipboardCheck size={14} />盤點</button>
+            <button type="button" className="row-text-button" disabled={!canCount} onClick={() => onAddMovement(item)} title={canCount ? undefined : "你的帳號沒有新增異動的權限"}><ClipboardList size={14} />異動</button>
+            <RowMenu item={item} canManage={canManage} canReactivateOrDelete={canReactivateOrDelete} onEdit={() => onEditItem(item)} onToggle={() => toggleActive(item)} onDelete={() => onDeleteItem(item)} />
+          </div></td>
+        </tr>;
+      })}
+    </tbody></table></div>}
   </>;
+}
+
+// 每列的「⋯」選單：編輯、停用／啟用、刪除。點外面或按Esc會關掉；沒權限的項目會寫出原因。
+function RowMenu({ item, canManage, canReactivateOrDelete, onEdit, onToggle, onDelete }: { item: InventoryItem; canManage: boolean; canReactivateOrDelete: boolean; onEdit: () => void; onToggle: () => void; onDelete: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // 鍵盤操作：打開後游標移到第一個能按的選項，上下鍵移動，Esc關閉並把游標還給「⋯」按鈕。
+  const menuItems = () => Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
+  // 選單用畫面座標定位，才不會被表格的捲動框切掉；下方空間不夠時往上開。捲動頁面時關掉，避免位置跑掉。
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const toggleOpen = () => {
+    if (open) { setOpen(false); return; }
+    const r = triggerRef.current?.getBoundingClientRect();
+    if (r) {
+      const menuH = 126, menuW = 176;
+      const top = r.bottom + 4 + menuH > window.innerHeight ? Math.max(8, r.top - 4 - menuH) : r.bottom + 4;
+      setPos({ top, left: Math.max(8, r.right - menuW) });
+    }
+    setOpen(true);
+  };
+  useEffect(() => {
+    if (!open) return;
+    menuItems()[0]?.focus({ preventScroll: true });
+    const onScroll = () => setOpen(false);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setOpen(false); triggerRef.current?.focus(); return; }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        const list = menuItems(); if (list.length === 0) return;
+        e.preventDefault();
+        const at = list.indexOf(document.activeElement as HTMLButtonElement);
+        const next = e.key === "ArrowDown" ? (at + 1) % list.length : (at - 1 + list.length) % list.length;
+        list[next].focus({ preventScroll: true });
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); window.removeEventListener("scroll", onScroll, true); window.removeEventListener("resize", onScroll); };
+  }, [open]);
+  const toggleAllowed = item.active ? canManage : canReactivateOrDelete;
+  const run = (fn: () => void) => { setOpen(false); fn(); };
+  return <div className="row-menu" ref={ref}>
+    <button ref={triggerRef} type="button" className="row-menu-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`${item.name}的更多操作`} title="更多操作" onClick={toggleOpen}><MoreHorizontal size={16} /></button>
+    {open && <div className="row-menu-list" role="menu" style={pos ? { top: pos.top, left: pos.left } : undefined}>
+      <button type="button" role="menuitem" disabled={!canManage} onClick={() => run(onEdit)}><Pencil size={14} />編輯品項{!canManage && <small>沒有權限</small>}</button>
+      <button type="button" role="menuitem" disabled={!toggleAllowed} onClick={() => run(onToggle)}><Power size={14} />{item.active ? "停用品項" : "重新啟用"}{!toggleAllowed && <small>沒有權限</small>}</button>
+      <button type="button" role="menuitem" className="danger" disabled={!canReactivateOrDelete} onClick={() => run(onDelete)}><Trash2 size={14} />刪除品項{!canReactivateOrDelete && <small>沒有權限</small>}</button>
+    </div>}
+  </div>;
 }
 
 // 有效期限欄：列出每一批的到期日與數量（先到期的在上面），已過期或EXPIRY_WARNING_DAYS天內到期的標紅。
@@ -1090,7 +1213,7 @@ function PurchaseModal({ inventory, categories, initialItem, onClose, onSave, on
         <label>大分類<select required disabled={categories.length === 0} value={newCategory} onChange={(e) => setNewCategory(e.target.value)}><option value="">請選擇</option>{categories.map((c) => <option key={c}>{c}</option>)}</select></label>
         <label>計算單位<input required value={newUnit} onChange={(e) => setNewUnit(e.target.value)} placeholder="包、瓶、公斤" /></label>
       </div>
-      <label>安全庫存<input type="number" min="0" step="0.5" value={newSafetyStock} onChange={(e) => setNewSafetyStock(Math.max(0, roundQuantity(Number(e.target.value))))} /></label>
+      <label>安全庫存<input type="number" min="0" step="0.5" value={newSafetyStock} onChange={(e) => setNewSafetyStock(Math.max(0, roundQuantity(Number(e.target.value))))} /><small className="field-hint">庫存少於這個數量就會提醒補貨（剛好等於不算）；設 0 就不提醒。</small></label>
     </>}
 
     <div className="form-grid"><label>採購數量<input type="number" min="0.5" step="0.5" value={quantity} onChange={(e) => setQuantity(roundQuantity(Number(e.target.value)))} /></label><label>急迫程度<select value={priority} onChange={(e) => setPriority(e.target.value as "一般" | "急件")}><option>一般</option><option>急件</option></select></label></div>
@@ -1212,7 +1335,7 @@ function ItemModal({ categories, item, onClose, onSave }: {
     <label>品項名稱<input required value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：客房瓶裝水" /></label>
     {categories.length === 0 && <div className="warning-box"><span>• 目前沒有啟用中的分類，請先到「系統設定」新增或啟用分類。</span></div>}
     <div className="form-grid"><label>分類<select required disabled={categories.length === 0} value={category} onChange={(e) => setCategory(e.target.value)}>{categories.map((name) => <option key={name}>{name}</option>)}</select></label><label>計算單位<input required value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="包、瓶、公斤" /></label></div>
-    <div className="form-grid"><label>安全庫存<input type="number" min="0" step="0.5" value={safetyStock} onChange={(e) => setSafetyStock(Math.max(0, roundQuantity(Number(e.target.value))))} /></label><label>建議採購量<input type="number" min="0" step="1" value={suggestedPurchase} onChange={(e) => setSuggestedPurchase(Math.round(Number(e.target.value)))} /></label></div>
+    <div className="form-grid"><label>安全庫存<input type="number" min="0" step="0.5" value={safetyStock} onChange={(e) => setSafetyStock(Math.max(0, roundQuantity(Number(e.target.value))))} /><small className="field-hint">庫存少於這個數量就會提醒補貨（剛好等於不算）；設 0 就不提醒。</small></label><label>建議採購量<input type="number" min="0" step="1" value={suggestedPurchase} onChange={(e) => setSuggestedPurchase(Math.round(Number(e.target.value)))} /><small className="field-hint">按「採購」時預設要買的數量，之後還可以改。</small></label></div>
     <label>供應商<input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="可稍後設定" /></label>
     <div className="setting-note">有效期限改在入庫時填寫（新增進貨單或新增異動），同一品項可以有多個不同日期。</div>
     <label className="check-label"><input type="checkbox" checked={usageForecastEnabled} onChange={(e) => setUsageForecastEnabled(e.target.checked)} />啟用預估使用量</label>

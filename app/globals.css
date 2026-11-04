@@ -21,7 +21,7 @@ button { cursor:pointer; }
 .pill { display:inline-flex; align-items:center; justify-content:center; white-space:nowrap; padding:5px 9px; border-radius:999px; background:#e0ecdf; color:#2c624d; font-size:12px; font-weight:700; }.pill-gold { background:#f2e4bd;color:#735520; }.pill-red { background:#f3d5cb;color:#984632; }.pill-blue { background:#dce7ec;color:#36596a; }
 .toolbar { display:flex; gap:12px; margin-bottom:15px; }.search-box { flex:1; max-width:430px; position:relative; }.search-box svg { position:absolute;left:13px;top:12px;color:var(--muted); }.search-box input,.toolbar select { width:100%; height:43px;border:1px solid var(--line);border-radius:10px;background:white;padding:0 14px; }.search-box input { padding-left:40px; }.toolbar select { width:170px; }
 .table-card { overflow:auto; }table { width:100%;border-collapse:collapse;min-width:780px; }th { text-align:left;color:var(--muted);background:#f4f0e7;font-size:12px;font-weight:600; }th,td { padding:14px 18px;border-bottom:1px solid #eee9df; }td { font-size:14px; }td strong,td small { display:block; }td small { color:var(--muted);font-size:11px;margin-top:4px; }.danger-text { color:#a64732; }.positive-text { color:#28764f; }
-.toolbar .inline-check { flex:none;white-space:nowrap;font-size:13px;font-weight:600;color:var(--muted); }.row-actions { display:flex;align-items:center;gap:4px;flex-wrap:wrap; }.row-actions button { border:0;background:none;color:var(--ink);display:grid;place-items:center;width:27px;height:27px;border-radius:7px; }.row-actions button:hover:not(:disabled) { background:#e7e0cf; }.row-actions button:disabled { opacity:.35;cursor:not-allowed; }.row-actions button.danger { color:var(--red); }tr.inventory-row-inactive { opacity:.55; }.danger-button { background:var(--red)!important; }.danger-button:hover { background:#8a3626!important; }
+.toolbar .inline-check { flex:none;white-space:nowrap;font-size:13px;font-weight:600;color:var(--muted); }.row-actions { display:flex;align-items:center;gap:4px;flex-wrap:wrap; }.row-actions button { border:0;background:none;color:var(--ink);display:grid;place-items:center;width:27px;height:27px;border-radius:7px; }.row-actions button:hover:not(:disabled) { background:#e7e0cf; }.row-actions button:disabled { opacity:.35;cursor:not-allowed; }.row-actions button.danger { color:var(--red); }tr.inventory-row-inactive { opacity:.55; }.danger-button { background:#a64732!important; }.danger-button:hover { background:#8a3626!important; }
 .purchase-board { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; overflow-x:auto; align-items:start; }.purchase-column { min-width:245px;background:#eee9df;border-radius:15px;padding:13px; }.purchase-column>header { display:flex;justify-content:space-between;padding:2px 4px 12px;font-weight:700; }.purchase-column>header b { background:white;border-radius:999px;padding:2px 8px; }.purchase-column-list { max-height:70vh;overflow-y:auto;padding-right:2px; }.purchase-card { background:white;border:1px solid var(--line);border-radius:10px;padding:10px 11px;margin-bottom:7px;box-shadow:0 6px 12px rgba(0,0,0,.03); }.purchase-card>div { display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 8px; }.purchase-card>div strong { font-size:13px; }.purchase-card-qty { font-weight:700;color:var(--forest);font-size:12px;white-space:nowrap; }.purchase-card p { margin:4px 0 0;color:var(--muted);font-size:12px;line-height:1.4; }.purchase-card small { display:block;color:var(--muted);font-size:11px;margin-top:4px; }.purchase-card button { width:100%;border:0;background:#edf3ef;color:var(--forest);border-radius:8px;padding:7px;margin-top:8px;display:flex;justify-content:center;align-items:center;font-weight:700;font-size:12px; }
 .notes-page { display:grid;grid-template-columns:repeat(2,1fr);gap:15px; }.notes-page article { background:white;border:1px solid var(--line);border-radius:15px;padding:19px;box-shadow:var(--shadow); }.notes-page article header { display:flex;gap:8px;align-items:center; }.important-label { color:var(--red);font-size:12px;font-weight:700; }.notes-page article p { line-height:1.75;min-height:55px; }.notes-page footer { display:flex;justify-content:space-between;color:var(--muted);font-size:12px; }
 .note-delete { margin-left:auto;border:0;background:none;color:var(--muted);display:grid;place-items:center;width:26px;height:26px;border-radius:7px; }.note-delete:hover { background:#f4e3dd;color:var(--red); }
@@ -131,3 +131,51 @@ button { cursor:pointer; }
 .field-hint { color:#5b6a65;font-size:12px;font-weight:400;line-height:1.5; }
 .receipt-lines .check-label { display:flex;align-items:center;gap:8px;justify-content:flex-start; }
 .receipt-lines .check-label input { width:auto;margin:0; }
+/* 庫存管理：全部／低庫存／快到期切換、文字小按鈕、「⋯」選單、找不到品項、狀態欄 */
+.stock-filter { display:inline-flex;gap:4px;padding:4px;border-radius:12px;background:#efebe2; }
+.stock-filter button { border:0;background:transparent;color:var(--ink);border-radius:9px;padding:7px 12px;font-weight:700;font-size:13px;display:inline-flex;align-items:center;gap:6px; }
+.stock-filter button span { min-width:20px;padding:1px 6px;border-radius:999px;background:rgba(32,51,46,.08);font-size:12px;font-variant-numeric:tabular-nums; }
+.stock-filter button.active { background:var(--forest);color:#fff; }
+.stock-filter button.active span { background:rgba(255,255,255,.2); }
+.stock-filter button:focus-visible,.row-text-button:focus-visible,.row-menu-trigger:focus-visible,.row-menu-list button:focus-visible { outline:2px solid var(--gold);outline-offset:2px; }
+.row-actions .row-text-button { width:auto;height:30px;padding:0 9px;gap:4px;display:inline-flex;align-items:center;border:1px solid #ddd5c4;background:#fff;color:var(--forest);font-size:12px;font-weight:700;border-radius:8px;white-space:nowrap; }
+.row-actions .row-text-button:hover:not(:disabled) { background:#e4eee6; }
+.row-menu { position:relative; }
+.row-actions .row-menu-trigger { width:30px;height:30px;border:1px solid transparent;border-radius:8px; }
+.row-actions .row-menu-trigger[aria-expanded="true"] { background:#e7e0cf; }
+.row-menu-list { position:fixed;z-index:40;width:176px;padding:5px;border:1px solid var(--line);border-radius:11px;background:var(--paper);box-shadow:0 12px 28px rgba(35,54,46,.16);display:grid;gap:2px; }
+.row-actions .row-menu-list button { width:100%;height:auto;padding:8px 10px;display:flex;align-items:center;gap:8px;justify-content:flex-start;border-radius:8px;font-size:13px;text-align:left;place-items:initial; }
+.row-menu-list button small { margin-left:auto;color:#8a948f;font-size:11px; }
+.row-actions .row-menu-list button.danger { color:#a64732; }
+.inventory-empty td { text-align:center;padding:34px 18px!important; }
+.inventory-empty strong { display:block;font-size:15px;margin-bottom:8px; }
+.inventory-empty span { display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center;color:#5b6a65;font-size:13px; }
+.inventory-empty .secondary-button { margin:4px auto 0; }
+.status-cell { display:grid;gap:4px;justify-items:start; }
+@media(max-width:760px){ .stock-filter { width:100%; } .stock-filter button { flex:1;justify-content:center; } }
+.toolbar { flex-wrap:wrap;align-items:center; }
+td .row-menu-list button small { display:inline;margin-top:0; }
+/* 庫存管理：停用／啟用提示 */
+.inventory-notice { display:flex;align-items:center;gap:12px;margin:0 0 14px;padding:10px 13px;border-radius:10px;background:#e4eee6;color:#1f4a3d;font-size:13px;line-height:1.6; }
+.inventory-notice>span { flex:1; }
+.error-box.inventory-notice { margin-top:0;background:#f8ddd5;color:#8b3c2c; }
+.inventory-notice .text-button { gap:4px; }
+.notice-close { border:0;background:transparent;color:inherit;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;flex:none; }
+.notice-close:hover { background:rgba(0,0,0,.06); }
+/* 庫存管理：手機上每個品項變成一張卡片（不用左右捲） */
+@media(max-width:760px){
+  .inventory-table { min-width:0; }
+  .inventory-table thead { display:none; }
+  .inventory-table,.inventory-table tbody,.inventory-table td { display:block; }
+  .inventory-table tr { display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;padding:14px 15px;border-bottom:1px solid #eee9df; }
+  .inventory-table tr.inventory-empty { display:block; }
+  .inventory-table td { padding:0;border:0; }
+  .inventory-table td::before { content:attr(data-label);display:block;color:#5b6a65;font-size:11px;margin-bottom:3px; }
+  .inventory-table td[data-label="品項"],.inventory-table td[data-label="操作"] { grid-column:1/-1; }
+  .inventory-table td[data-label="品項"]::before,.inventory-table td[data-label="操作"]::before { display:none; }
+  .inventory-table td[data-label="品項"] strong { font-size:15px; }
+  .inventory-table .row-actions { gap:6px; }
+  .inventory-table .row-actions .row-text-button { flex:1;height:38px;justify-content:center; }
+  .inventory-table .row-actions .row-menu-trigger { width:38px;height:38px; }
+}
+.form-grid>label { align-content:start; }

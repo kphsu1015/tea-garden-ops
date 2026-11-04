@@ -136,7 +136,8 @@ export function isForecastActive(item: Pick<InventoryItem, "usageForecastEnabled
 export type LowStockReason = "safety" | "forecast" | "both" | null;
 
 export function getLowStockReason(item: Pick<InventoryItem, "quantity" | "safetyStock" | "usageForecastEnabled" | "estimatedUsage" | "usagePeriod">): LowStockReason {
-  const belowSafety = item.quantity <= item.safetyStock;
+  // 「少於」安全庫存才算低庫存；剛好等於安全庫存還不算（2026-11-04 使用者決定）。安全庫存設0時等於不提醒。
+  const belowSafety = item.quantity < item.safetyStock;
   if (!isForecastActive(item)) return belowSafety ? "safety" : null;
   const belowForecast = item.quantity < (item.estimatedUsage as number);
   if (belowSafety && belowForecast) return "both";

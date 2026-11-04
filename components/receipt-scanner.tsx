@@ -628,7 +628,7 @@ function ReceiptLineMatch({ line, inventory, categories, onUpdate, onUpdateNewIt
         <label>大分類<select required disabled={categories.length === 0} value={line.newItem.category} onChange={(e) => onUpdateNewItem({ category: e.target.value })}><option value="">請選擇</option>{categories.map((c) => <option key={c}>{c}</option>)}</select></label>
       </div>
       <label>計算單位<input required value={line.newItem.unit} onChange={(e) => onUpdateNewItem({ unit: e.target.value })} placeholder="例如：包、瓶、盒、公斤" /><small className="field-hint">庫存數量用什麼單位計算。之後盤點、扣庫存、提醒補貨都用這個單位。</small></label>
-      <label>安全庫存<input type="number" min="0" step="0.5" value={line.newItem.safetyStock} onChange={(e) => onUpdateNewItem({ safetyStock: Math.max(0, roundQuantity(Number(e.target.value))) })} /></label>
+      <label>安全庫存<input type="number" min="0" step="0.5" value={line.newItem.safetyStock} onChange={(e) => onUpdateNewItem({ safetyStock: Math.max(0, roundQuantity(Number(e.target.value))) })} /><small className="field-hint">庫存少於這個數量就會提醒補貨（剛好等於不算）；設 0 就不提醒。</small></label>
       <label className="check-label"><input type="checkbox" checked={line.newItem.usageForecastEnabled} onChange={(e) => onUpdateNewItem({ usageForecastEnabled: e.target.checked })} />啟用預估使用量</label>
       {line.newItem.usageForecastEnabled && <div className="form-grid">
         <label>預估使用量（{line.newItem.unit || "單位"}）<input required type="number" min="1" step="1" value={line.newItem.estimatedUsage} onChange={(e) => onUpdateNewItem({ estimatedUsage: Math.round(Number(e.target.value)) })} /></label>

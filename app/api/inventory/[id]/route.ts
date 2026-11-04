@@ -9,8 +9,8 @@ export const runtime = "nodejs";
 type RouteContext = { params: Promise<{ id: string }> };
 
 const WRITE_FORBIDDEN_MESSAGE = "找不到這個品項，或您沒有權限操作（僅管理員或訂貨管家可以新增／編輯品項）。";
-const REACTIVATE_FORBIDDEN_MESSAGE = "只有管理員可以重新啟用品項。";
-const DELETE_FORBIDDEN_MESSAGE = "找不到這個品項，或您沒有權限刪除（僅管理員可以永久刪除品項）。";
+const REACTIVATE_FORBIDDEN_MESSAGE = "只有管理員或訂貨管家可以重新啟用品項。";
+const DELETE_FORBIDDEN_MESSAGE = "找不到這個品項，或您沒有權限刪除（僅管理員或訂貨管家可以永久刪除品項）。";
 const HAS_HISTORY_MESSAGE = "此品項已有歷史紀錄，無法永久刪除，請改為停用。";
 
 export async function PATCH(request: Request, { params }: RouteContext) {

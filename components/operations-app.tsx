@@ -1,9 +1,9 @@
 "use client";
 
 import {
-  AlertTriangle, Archive, BarChart3, Bell, Box, ChevronRight, ClipboardCheck, ClipboardList,
+  AlertTriangle, Archive, BarChart3, Bell, Box, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardCheck, ClipboardList,
   Clock3, Eye, EyeOff, FileScan, History, LogOut, Menu, MessageSquareText, Pencil, Plus, Power, Search, Settings,
-  MoreHorizontal, ShoppingCart, Trash2, Undo2, Users, X
+  MoreHorizontal, PauseCircle, ShoppingCart, Trash2, Undo2, Users, X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { initialNotes, initialPurchases } from "@/lib/demo-data";
@@ -365,6 +365,15 @@ export function OperationsApp() {
     if (error) return error;
     await purchasesState.refresh(true);
   };
+  const editPurchase = async (id: string, patch: { quantity: number; note: string }): Promise<string | void> => {
+    if (!session.configured) {
+      setLocalPurchases(localPurchases.map((r) => r.id === id ? { ...r, quantity: patch.quantity, note: patch.note.trim() || undefined } : r));
+      return;
+    }
+    const error = await requestJson(`/api/purchases/${id}`, "PATCH", { quantity: patch.quantity, note: patch.note });
+    if (error) return error;
+    await purchasesState.refresh(true);
+  };
   const addNote = async (draft: NoteDraft): Promise<string | void> => {
     if (!session.configured) {
       setLocalNotes([{ id: generateId(), ...draft, author: "Alan", createdAt: new Date().toLocaleString("zh-TW", { hour12: false }) }, ...localNotes]);
@@ -510,7 +519,7 @@ export function OperationsApp() {
             onAddMovement={(item) => setMovingItem(item)}
             onPurchase={openPurchaseModal}
           />}
-          {view === "purchases" && <PurchasesView requests={purchases} loading={session.configured && purchasesState.loading} loadError={session.configured ? purchasesState.error : ""} canAdvance={role === "admin" || role === "purchaser" || !session.configured} onAdvance={advancePurchase} onSetPriority={setPurchasePriority} onNew={() => openPurchaseModal()} />}
+          {view === "purchases" && <PurchasesView requests={purchases} loading={session.configured && purchasesState.loading} loadError={session.configured ? purchasesState.error : ""} canAdvance={role === "admin" || role === "purchaser" || !session.configured} onAdvance={advancePurchase} onSetPriority={setPurchasePriority} onEdit={editPurchase} onNew={() => openPurchaseModal()} onGoReceipts={() => openView("receipts")} />}
           {view === "receipts" && <ReceiptScanner inventory={activeInventory} categories={activeCategoryNames} receipts={receipts} retentionDays={retentionDays} onConfirm={async (record) => {
             // 新品項建立、庫存數量與異動紀錄都已經在Supabase交易（RPC）內原子性完成，這裡只需要重新整理庫存與進貨單列表。
             await inventoryState.refresh();
@@ -538,7 +547,7 @@ export function OperationsApp() {
         </section>
       </main>
 
-      {modal === "purchase" && <PurchaseModal inventory={activeInventory} categories={activeCategoryNames} initialItem={query} onClose={() => setModal(null)} onSave={async (draft) => { const error = await addPurchase(draft); if (error) return error; setModal(null); setQuery(""); }} onCreateItem={inventoryState.createAndReturnItem} />}
+      {modal === "purchase" && <PurchaseModal inventory={activeInventory} categories={activeCategoryNames} openRequests={purchases} initialItem={query} onClose={() => setModal(null)} onSave={async (draft) => { const error = await addPurchase(draft); if (error) return error; setModal(null); setQuery(""); }} onCreateItem={inventoryState.createAndReturnItem} />}
       {modal === "item" && <ItemModal
         categories={itemFormCategoryOptions}
         item={editingItem}
@@ -970,20 +979,21 @@ function InventoryView({ items, filter, setFilter, loading, error, demo, categor
   </>;
 }
 
-// 每列的「⋯」選單：編輯、停用／啟用、刪除。點外面或按Esc會關掉；沒權限的項目會寫出原因。
-function RowMenu({ item, canManage, canReactivateOrDelete, onEdit, onToggle, onDelete }: { item: InventoryItem; canManage: boolean; canReactivateOrDelete: boolean; onEdit: () => void; onToggle: () => void; onDelete: () => void }) {
+// 「⋯」選單（庫存每列、採購卡片共用）：用畫面座標定位才不會被捲動框切掉，下方空間不夠時往上開；
+// 點外面、按Esc、捲動頁面都會關掉；鍵盤上下鍵移動，Esc後游標回到「⋯」按鈕。沒權限的項目會寫出原因。
+type ActionMenuItem = { label: string; icon: typeof Box; onClick: () => void; disabled?: boolean; note?: string; danger?: boolean; hidden?: boolean };
+function ActionMenu({ label, items }: { label: string; items: ActionMenuItem[] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  // 鍵盤操作：打開後游標移到第一個能按的選項，上下鍵移動，Esc關閉並把游標還給「⋯」按鈕。
-  const menuItems = () => Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
-  // 選單用畫面座標定位，才不會被表格的捲動框切掉；下方空間不夠時往上開。捲動頁面時關掉，避免位置跑掉。
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const shown = items.filter((i) => !i.hidden);
+  const menuItems = () => Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
   const toggleOpen = () => {
     if (open) { setOpen(false); return; }
     const r = triggerRef.current?.getBoundingClientRect();
     if (r) {
-      const menuH = 126, menuW = 176;
+      const menuH = 12 + shown.length * 38, menuW = 196;
       const top = r.bottom + 4 + menuH > window.innerHeight ? Math.max(8, r.top - 4 - menuH) : r.bottom + 4;
       setPos({ top, left: Math.max(8, r.right - menuW) });
     }
@@ -1010,16 +1020,22 @@ function RowMenu({ item, canManage, canReactivateOrDelete, onEdit, onToggle, onD
     document.addEventListener("keydown", onKey);
     return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); window.removeEventListener("scroll", onScroll, true); window.removeEventListener("resize", onScroll); };
   }, [open]);
-  const toggleAllowed = item.active ? canManage : canReactivateOrDelete;
-  const run = (fn: () => void) => { setOpen(false); fn(); };
+  if (shown.length === 0) return null;
   return <div className="row-menu" ref={ref}>
-    <button ref={triggerRef} type="button" className="row-menu-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={`${item.name}的更多操作`} title="更多操作" onClick={toggleOpen}><MoreHorizontal size={16} /></button>
+    <button ref={triggerRef} type="button" className="row-menu-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={label} title="更多操作" onClick={toggleOpen}><MoreHorizontal size={16} /></button>
     {open && <div className="row-menu-list" role="menu" style={pos ? { top: pos.top, left: pos.left } : undefined}>
-      <button type="button" role="menuitem" disabled={!canManage} onClick={() => run(onEdit)}><Pencil size={14} />編輯品項{!canManage && <small>沒有權限</small>}</button>
-      <button type="button" role="menuitem" disabled={!toggleAllowed} onClick={() => run(onToggle)}><Power size={14} />{item.active ? "停用品項" : "重新啟用"}{!toggleAllowed && <small>沒有權限</small>}</button>
-      <button type="button" role="menuitem" className="danger" disabled={!canReactivateOrDelete} onClick={() => run(onDelete)}><Trash2 size={14} />刪除品項{!canReactivateOrDelete && <small>沒有權限</small>}</button>
+      {shown.map((item) => { const Icon = item.icon; return <button key={item.label} type="button" role="menuitem" className={item.danger ? "danger" : ""} disabled={item.disabled} onClick={() => { setOpen(false); item.onClick(); }}><Icon size={14} />{item.label}{item.note && <small>{item.note}</small>}</button>; })}
     </div>}
   </div>;
+}
+
+function RowMenu({ item, canManage, canReactivateOrDelete, onEdit, onToggle, onDelete }: { item: InventoryItem; canManage: boolean; canReactivateOrDelete: boolean; onEdit: () => void; onToggle: () => void; onDelete: () => void }) {
+  const toggleAllowed = item.active ? canManage : canReactivateOrDelete;
+  return <ActionMenu label={`${item.name}的更多操作`} items={[
+    { label: "編輯品項", icon: Pencil, onClick: onEdit, disabled: !canManage, note: canManage ? undefined : "沒有權限" },
+    { label: item.active ? "停用品項" : "重新啟用", icon: Power, onClick: onToggle, disabled: !toggleAllowed, note: toggleAllowed ? undefined : "沒有權限" },
+    { label: "刪除品項", icon: Trash2, onClick: onDelete, disabled: !canReactivateOrDelete, note: canReactivateOrDelete ? undefined : "沒有權限", danger: true },
+  ]} />;
 }
 
 // 有效期限欄：列出每一批的到期日與數量（先到期的在上面），已過期或EXPIRY_WARNING_DAYS天內到期的標紅。
@@ -1030,53 +1046,167 @@ function BatchExpiryList({ item, todayKey }: { item: InventoryItem; todayKey: st
   return <div className="batch-expiry-list">{item.batches.map((batch) => <small key={batch.id} className={soonKeys.has(batch.id) ? "danger-text" : ""}>{batch.expiryDate ?? "未標日期"} · {formatNumber(batch.quantity)}{item.unit}</small>)}</div>;
 }
 
-function PurchasesView({ requests, loading, loadError, canAdvance, onAdvance, onSetPriority, onNew }: {
+// 看板上每一欄的「推進」按鈕寫清楚會變成什麼；已到貨的下一步是去建立進貨單（實際入庫）。
+const NEXT_ACTION_LABEL: Partial<Record<PurchaseStatus, string>> = { "待確認": "標記已訂購", "已訂購": "標記已到貨" };
+
+function PurchasesView({ requests, loading, loadError, canAdvance, onAdvance, onSetPriority, onEdit, onNew, onGoReceipts }: {
   requests: PurchaseRequest[];
   loading: boolean;
   loadError: string;
   canAdvance: boolean;
   onAdvance: (id: string, status: PurchaseStatus) => Promise<string | void>;
   onSetPriority: (id: string, priority: PurchaseRequest["priority"]) => Promise<string | void>;
+  onEdit: (id: string, patch: { quantity: number; note: string }) => Promise<string | void>;
   onNew: () => void;
+  onGoReceipts: () => void;
 }) {
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [actionError, setActionError] = useState("");
+  // 每張卡片各自記錄「處理中」，同時操作好幾張也不會互相干擾。
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  const setBusy = (id: string, on: boolean) => setBusyIds((prev) => { const next = new Set(prev); if (on) next.add(id); else next.delete(id); return next; });
+  const isBusy = (id: string) => busyIds.has(id);
+  // 錯誤顯示在出錯的那張卡片上，不放在頁面最上方（捲下去時看不到）。
+  const [cardError, setCardError] = useState<{ id: string; message: string } | null>(null);
+  // 狀態改變後的提示：可以馬上復原（改回原本的狀態）。復原失敗的錯誤顯示在提示條上（卡片可能已經不在看板上）。
+  // items：這次被移動的需求（整欄一次標記時會有好幾筆）；failed：整欄標記時沒成功的筆數；error：復原失敗的原因。
+  const [moved, setMoved] = useState<{ items: Array<{ request: PurchaseRequest; from: PurchaseStatus }>; to: PurchaseStatus; failed?: number; error?: string } | null>(null);
+  const [showPaused, setShowPaused] = useState(false);
+  // 修改數量／備註（只有「待確認」可以改）：直接在卡片上展開小表單。
+  const [editing, setEditing] = useState<{ id: string; quantity: number; note: string; saving: boolean; error?: string } | null>(null);
+  const moveSeq = useRef(0);
+  // 整欄標記進行中時，其他推進按鈕先停用，避免兩批同時跑、復原紀錄互相蓋掉。
+  const [bulkRunning, setBulkRunning] = useState(false);
 
-  // 「採購需求」只是提醒／追蹤用的看板，不會直接增加庫存。「已到貨」是最後一步，只能標記已處理（純狀態文字），
-  // 實際入庫一律要另外到「新增進貨單」建立進貨單，才會真正呼叫record_stock_movement增加庫存。
-  const advance = async (request: PurchaseRequest) => {
-    const index = statusSteps.indexOf(request.status);
-    if (index < 0 || index >= statusSteps.length - 1) return;
-    setBusyId(request.id);
-    setActionError("");
-    const error = await onAdvance(request.id, statusSteps[index + 1]);
-    setBusyId(null);
-    if (error) setActionError(error);
+  // 「採購需求」只是提醒／追蹤用的看板，不會直接增加庫存。實際入庫一律要另外到「新增進貨單」建立進貨單，
+  // 才會真正呼叫record_stock_movement增加庫存。
+  const moveTo = async (request: PurchaseRequest, to: PurchaseStatus) => {
+    if (request.status === to || isBusy(request.id) || bulkRunning) return;
+    const seq = ++moveSeq.current;
+    setBusy(request.id, true);
+    if (cardError?.id === request.id) setCardError(null);
+    const error = await onAdvance(request.id, to);
+    setBusy(request.id, false);
+    if (error) { setCardError({ id: request.id, message: error }); return; }
+    // 只有最後一次成功的操作會顯示在提示條（才不會被晚回來的舊結果蓋掉）。
+    if (seq === moveSeq.current) setMoved({ items: [{ request, from: request.status }], to });
+  };
+  // 整欄一次標記（例如同一家供應商一起訂）：一筆一筆送，成功的可以一起復原，失敗的會寫出筆數。
+  const moveAll = async (list: PurchaseRequest[], to: PurchaseStatus) => {
+    const targets = list.filter((r) => r.status !== to && !isBusy(r.id));
+    if (targets.length === 0 || bulkRunning) return;
+    const seq = ++moveSeq.current;
+    setBulkRunning(true);
+    targets.forEach((r) => setBusy(r.id, true));
+    const done: Array<{ request: PurchaseRequest; from: PurchaseStatus }> = [];
+    let failed = 0, lastError = "";
+    for (const r of targets) {
+      const error = await onAdvance(r.id, to);
+      setBusy(r.id, false);
+      if (error) { failed++; lastError = error; } else done.push({ request: r, from: r.status });
+    }
+    setBulkRunning(false);
+    if (seq === moveSeq.current) setMoved({ items: done, to, failed: failed || undefined, error: failed ? lastError : undefined });
+  };
+  const undoMove = async () => {
+    if (!moved || moved.items.some((it) => isBusy(it.request.id))) return;
+    const current = moved;
+    current.items.forEach((it) => setBusy(it.request.id, true));
+    const left: typeof current.items = [];
+    let lastError = "";
+    for (const it of current.items) {
+      const error = await onAdvance(it.request.id, it.from);
+      setBusy(it.request.id, false);
+      if (error) { left.push(it); lastError = error; }
+    }
+    // 全部復原成功就關掉提示；有失敗的留在提示條上，可以再試一次。
+    setMoved((m) => m === current ? (left.length > 0 ? { items: left, to: current.to, error: `復原失敗：${lastError}` } : null) : m);
+  };
+  const saveEdit = async () => {
+    if (!editing) return;
+    const quantity = roundQuantity(Number(editing.quantity));
+    if (!(quantity > 0)) { setEditing({ ...editing, error: "採購數量必須大於0。" }); return; }
+    setEditing({ ...editing, saving: true, error: undefined });
+    const error = await onEdit(editing.id, { quantity, note: editing.note });
+    setEditing((e) => e && e.id === editing.id ? (error ? { ...e, saving: false, error } : null) : e);
   };
 
   // 只有「待確認」階段可以改急迫程度；訂購後再改沒有意義。
   const changePriority = async (request: PurchaseRequest, priority: PurchaseRequest["priority"]) => {
-    if (request.priority === priority) return;
-    setBusyId(request.id);
-    setActionError("");
+    if (request.priority === priority || isBusy(request.id)) return;
+    setBusy(request.id, true);
+    if (cardError?.id === request.id) setCardError(null);
     const error = await onSetPriority(request.id, priority);
-    setBusyId(null);
-    if (error) setActionError(error);
+    setBusy(request.id, false);
+    if (error) setCardError({ id: request.id, message: error });
+  };
+
+  // 每一欄急件排最上面，其他照原本順序。
+  const inColumn = (status: PurchaseStatus) => requests
+    .map((r, index) => ({ r, index }))
+    .filter(({ r }) => r.status === status)
+    .sort((a, b) => (a.r.priority === "急件" ? 0 : 1) - (b.r.priority === "急件" ? 0 : 1) || a.index - b.index)
+    .map(({ r }) => r);
+  const paused = requests.filter((r) => r.status === "暫緩");
+  const movedName = moved ? (moved.items.length === 1 ? `「${moved.items[0].request.itemName}」` : `${moved.items.length} 筆需求`) : "";
+  const movedText = !moved ? "" : moved.failed && moved.items.length === 0 ? `${moved.failed} 筆都沒有成功：${moved.error}` : moved.error && !moved.failed ? moved.error
+    : (moved.to === "暫緩" ? `已暫緩${movedName}，會收到下方「暫緩中」。` : moved.to === "已入庫" ? `已把${movedName}標記為已處理。` : `已把${movedName}移到「${moved.to}」。`)
+      + (moved.failed ? `另外有 ${moved.failed} 筆沒有成功：${moved.error}` : "");
+
+  const card = (r: PurchaseRequest, status: PurchaseStatus) => {
+    const index = statusSteps.indexOf(status);
+    const prev = index > 0 ? statusSteps[index - 1] : null;
+    return <article key={r.id} className={`purchase-card${r.priority === "急件" ? " purchase-card-urgent" : ""}`}>
+      <div className="purchase-card-head">
+        <div><strong>{r.itemName}</strong><span className="purchase-card-qty">{r.quantity} {r.unit}</span>{r.priority === "急件" && <Pill tone="red">急件</Pill>}</div>
+        {canAdvance && <ActionMenu label={`${r.itemName}採購需求的更多操作`} items={[
+          { label: "修改數量／備註", icon: Pencil, onClick: () => setEditing({ id: r.id, quantity: r.quantity, note: r.note ?? "", saving: false }), hidden: status !== "待確認", disabled: isBusy(r.id) },
+          { label: `退回「${prev ?? ""}」`, icon: Undo2, onClick: () => { if (prev) moveTo(r, prev); }, hidden: !prev, disabled: isBusy(r.id) },
+          { label: "標記已處理（已入庫）", icon: Check, onClick: () => moveTo(r, "已入庫"), hidden: status !== "已到貨", disabled: isBusy(r.id) },
+          { label: "暫緩這筆需求", icon: PauseCircle, onClick: () => moveTo(r, "暫緩"), disabled: isBusy(r.id) },
+        ]} />}
+      </div>
+      {editing?.id === r.id ? <form className="purchase-edit" onSubmit={(e) => { e.preventDefault(); saveEdit(); }}>
+        <label>採購數量（{r.unit}）<input type="number" min="0.5" step="0.5" value={editing.quantity} onChange={(e) => setEditing({ ...editing, quantity: Number(e.target.value) })} autoFocus /></label>
+        <label>原因或備註<textarea value={editing.note} maxLength={500} onChange={(e) => setEditing({ ...editing, note: e.target.value })} /></label>
+        {editing.error && <div className="error-box purchase-card-error" role="alert">{editing.error}</div>}
+        <div className="purchase-edit-actions"><button type="button" className="secondary-button" onClick={() => setEditing(null)} disabled={editing.saving}>取消</button><button type="submit" className="primary-button" disabled={editing.saving}>{editing.saving ? "儲存中…" : "儲存"}</button></div>
+      </form> : r.note && <p>{r.note}</p>}
+      <small>{r.requester} · {r.requestedAt}</small>
+      {status === "待確認" && canAdvance && editing?.id !== r.id && <div className="priority-toggle" role="group" aria-label="急迫程度">{(["一般", "急件"] as const).map((p) => <button key={p} type="button" disabled={isBusy(r.id)} aria-pressed={r.priority === p} className={r.priority === p ? (p === "急件" ? "active urgent" : "active") : ""} onClick={() => changePriority(r, p)}>{p}</button>)}</div>}
+      {cardError?.id === r.id && <div className="error-box purchase-card-error" role="alert">{cardError.message}</div>}
+      {canAdvance && editing?.id !== r.id && (status === "已到貨"
+        ? <button type="button" onClick={onGoReceipts}><FileScan size={15} />去建立進貨單</button>
+        : <button type="button" disabled={isBusy(r.id) || bulkRunning} onClick={() => moveTo(r, statusSteps[index + 1])}>{isBusy(r.id) ? "更新中…" : NEXT_ACTION_LABEL[status]}<ChevronRight size={15} /></button>)}
+    </article>;
   };
 
   return <><PageHeader title="採購需求" subtitle="從提出、訂購到到貨，清楚追蹤每一項採購；實際入庫請另外到「新增進貨單」建立進貨單。" button="新增採購需求" onClick={onNew} />
     {loadError && <div className="error-box">{loadError}</div>}
-    {actionError && <div className="error-box">{actionError}</div>}
+    {moved && <div className={moved.error ? "error-box inventory-notice" : "inventory-notice"} role={moved.error ? "alert" : "status"}>
+      <span>{movedText}</span>
+      {moved.items.length > 0 && <button type="button" className="text-button" onClick={undoMove} disabled={moved.items.some((it) => isBusy(it.request.id))}><Undo2 size={14} />{moved.error && !moved.failed ? "再試一次" : moved.items.length > 1 ? `全部復原（${moved.items.length}）` : "復原"}</button>}
+      <button type="button" className="notice-close" aria-label="關閉提示" title="關閉提示" onClick={() => setMoved(null)}><X size={14} /></button>
+    </div>}
     {loading && requests.length === 0 && <p>載入採購需求中…</p>}
     {!canAdvance && <div className="setting-note">只有管理員與訂貨管家可以推進採購狀態；你可以新增採購需求並查看進度。</div>}
-    <div className="purchase-board">{statusSteps.slice(0, -1).map((status) => <section key={status} className="purchase-column"><header><span>{status}</span><b>{requests.filter((r) => r.status === status).length}</b></header><div className="purchase-column-list">{requests.filter((r) => r.status === status).map((r) => <article key={r.id} className="purchase-card">
-      <div><strong>{r.itemName}</strong><span className="purchase-card-qty">{r.quantity} {r.unit}</span>{r.priority === "急件" && <Pill tone="red">急件</Pill>}</div>
-      {r.note && <p>{r.note}</p>}
-      <small>{r.requester} · {r.requestedAt}</small>
-      {status === "待確認" && canAdvance && <div className="priority-toggle" role="group" aria-label="急迫程度">{(["一般", "急件"] as const).map((p) => <button key={p} type="button" disabled={busyId === r.id} aria-pressed={r.priority === p} className={r.priority === p ? (p === "急件" ? "active urgent" : "active") : ""} onClick={() => changePriority(r, p)}>{p}</button>)}</div>}
-      {status === "已到貨" && <div className="error-box">• 這裡只是提醒，不會自動增加庫存。請到「新增進貨單」輸入進貨單，庫存才會真正更新。</div>}
-      {canAdvance && <button disabled={busyId === r.id} onClick={() => advance(r)}>{status === "已到貨" ? "標記已處理" : "前往下一階段"}<ChevronRight size={15} /></button>}
-    </article>)}</div></section>)}</div>
+    <div className="purchase-board">{statusSteps.slice(0, -1).map((status) => { const list = inColumn(status); return <section key={status} className="purchase-column">
+      <header><span>{status}</span><b>{list.length}</b></header>
+      {canAdvance && NEXT_ACTION_LABEL[status] && list.length >= 2 && <button type="button" className="text-button purchase-column-bulk" disabled={bulkRunning || list.some((r) => isBusy(r.id))} onClick={() => moveAll(list, statusSteps[statusSteps.indexOf(status) + 1])}><Check size={14} />這一欄全部{NEXT_ACTION_LABEL[status]}（{list.length}）</button>}
+      {status === "已到貨" && <p className="purchase-column-note">這一欄只是提醒，不會自動增加庫存。到「新增進貨單」輸入後，庫存才會更新。</p>}
+      <div className="purchase-column-list">
+        {list.length === 0 && <p className="purchase-column-empty">{status === "待確認" ? "目前沒有待確認的需求" : status === "已訂購" ? "目前沒有已訂購、等到貨的需求" : "目前沒有已到貨的需求"}</p>}
+        {list.map((r) => card(r, status))}
+      </div>
+    </section>; })}</div>
+    {paused.length > 0 && <section className="purchase-paused">
+      <button type="button" className="text-button" aria-expanded={showPaused} onClick={() => setShowPaused((v) => !v)}>{showPaused ? <ChevronUp size={15} /> : <ChevronDown size={15} />}暫緩中（{paused.length}）</button>
+      {showPaused && <div className="purchase-paused-list">{paused.map((r) => <article key={r.id} className="purchase-card">
+        <div className="purchase-card-head"><div><strong>{r.itemName}</strong><span className="purchase-card-qty">{r.quantity} {r.unit}</span></div></div>
+        {r.note && <p>{r.note}</p>}
+        <small>{r.requester} · {r.requestedAt}</small>
+        {cardError?.id === r.id && <div className="error-box purchase-card-error" role="alert">{cardError.message}</div>}
+        {canAdvance && <button type="button" disabled={isBusy(r.id)} onClick={() => moveTo(r, "待確認")}><Undo2 size={15} />恢復到「待確認」</button>}
+      </article>)}</div>}
+    </section>}
   </>;
 }
 
@@ -1142,9 +1272,10 @@ function ModalShell({ title, subtitle, onClose, children }: { title: string; sub
   return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><div className="modal"><header><div><h2>{title}</h2><p>{subtitle}</p></div><button aria-label="關閉" title="關閉" onClick={onClose}><X /></button></header>{children}</div></div>;
 }
 
-function PurchaseModal({ inventory, categories, initialItem, onClose, onSave, onCreateItem }: {
+function PurchaseModal({ inventory, categories, openRequests, initialItem, onClose, onSave, onCreateItem }: {
   inventory: InventoryItem[];
   categories: string[];
+  openRequests: PurchaseRequest[];
   initialItem: string;
   onClose: () => void;
   onSave: (p: PurchaseDraft) => Promise<string | void>;
@@ -1154,7 +1285,19 @@ function PurchaseModal({ inventory, categories, initialItem, onClose, onSave, on
   const [mode, setMode] = useState<"existing" | "new">(inventory.length > 0 ? "existing" : "new");
   const [itemName, setItemName] = useState(first?.name ?? "");
   const current = inventory.find((i) => i.name === itemName) || first;
-  const [quantity, setQuantity] = useState(current?.suggestedPurchase ?? 1);
+  // 預設數量＝建議採購量；建議採購量是0（沒設定）時用1，免得送出時才被「數量必須大於0」擋下。
+  const defaultQty = (i?: InventoryItem) => (i && i.suggestedPurchase > 0 ? i.suggestedPurchase : 1);
+  const [quantity, setQuantity] = useState(defaultQty(current));
+  // 找品項：先選大分類（可選全部），低庫存的排最前面，其他照名稱排序。
+  const [pickCategory, setPickCategory] = useState("全部");
+  const pickCategories = Array.from(new Set(inventory.map((i) => i.category))).sort((a, b) => a.localeCompare(b, "zh-Hant"));
+  const isLowItem = (i: InventoryItem) => Boolean(getLowStockReason(i));
+  const options = inventory
+    .filter((i) => pickCategory === "全部" || i.category === pickCategory)
+    .sort((a, b) => Number(isLowItem(b)) - Number(isLowItem(a)) || a.name.localeCompare(b.name, "zh-Hant"));
+  const pickItem = (name: string) => { setItemName(name); const next = inventory.find((i) => i.name === name); if (next) setQuantity(defaultQty(next)); };
+  // 同一個品項已經有還沒處理完的需求時提醒（不擋），避免兩個人各提一張、買了兩倍。
+  const openSame = current ? openRequests.filter((r) => ["待確認", "已訂購", "已到貨"].includes(r.status) && (r.inventoryItemId ? r.inventoryItemId === current.id : r.itemName === current.name)) : [];
   const [priority, setPriority] = useState<"一般" | "急件">("一般");
   const [note, setNote] = useState("");
 
@@ -1203,8 +1346,12 @@ function PurchaseModal({ inventory, categories, initialItem, onClose, onSave, on
 
     {mode === "existing" ? <>
       {inventory.length === 0 ? <div className="warning-box"><span>• 目前沒有可選擇的庫存品項，請改用「建立新庫存品項」。</span></div> : <>
-        <label>品項<select value={itemName} onChange={(e) => { setItemName(e.target.value); const next = inventory.find((i) => i.name === e.target.value); if (next) setQuantity(next.suggestedPurchase); }}>{inventory.map((i) => <option key={i.id}>{i.name}</option>)}</select></label>
+        <div className="form-grid">
+          <label>大分類<select value={pickCategory} onChange={(e) => { const c = e.target.value; setPickCategory(c); const list = inventory.filter((i) => c === "全部" || i.category === c); if (current && !list.some((i) => i.id === current.id)) { const firstInList = [...list].sort((a, b) => Number(isLowItem(b)) - Number(isLowItem(a)) || a.name.localeCompare(b.name, "zh-Hant"))[0]; if (firstInList) pickItem(firstInList.name); } }}><option>全部</option>{pickCategories.map((c) => <option key={c}>{c}</option>)}</select></label>
+          <label>品項<select value={options.some((i) => i.name === itemName) ? itemName : (options[0]?.name ?? "")} onChange={(e) => pickItem(e.target.value)}>{options.map((i) => <option key={i.id} value={i.name}>{i.name}{isLowItem(i) ? "（低庫存）" : ""}</option>)}</select></label>
+        </div>
         {current && <div className="stock-hint">目前庫存：{formatNumber(current.quantity)}{current.unit}　安全庫存：{formatNumber(current.safetyStock)}{current.unit}</div>}
+        {openSame.length > 0 && <div className="warning-box"><span>• 「{current?.name}」已經有 {openSame.length} 張還沒處理完的需求：{openSame.map((r) => `${r.quantity}${r.unit}（${r.status}${r.priority === "急件" ? "・急件" : ""}）`).join("、")}。確定還要再提一張嗎？如果是要追加，可以照樣送出。</span></div>}
       </>}
     </> : <>
       {categories.length === 0 && <div className="warning-box"><span>• 目前沒有啟用中的分類，請先到「系統設定」新增或啟用分類。</span></div>}

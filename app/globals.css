@@ -217,3 +217,19 @@ td .row-menu-list button small { display:inline;margin-top:0; }
 .purchase-column-bulk { gap:4px;margin:-6px 4px 10px;font-size:12px; }
 .purchase-column-bulk:hover:not(:disabled) { text-decoration:underline;text-underline-offset:3px; }
 .purchase-column-bulk:disabled { opacity:.5;cursor:wait; }
+/* 總覽：載入失敗提醒、空區塊說明、中性色標籤、可以點的採購列、低庫存列的採購按鈕 */
+.pill-neutral { background:#ece8de;color:#4b5752; }
+.dashboard-alert { display:flex;align-items:center;gap:12px;margin:0 0 16px; }
+.dashboard-alert>span { flex:1; }
+.dashboard-alert .text-button { gap:4px;color:#8b3c2c;white-space:nowrap; }
+.panel-empty { margin:0;padding:22px 20px;color:#5b6a65;font-size:13px;line-height:1.6; }
+.compact-list>.compact-row-button { width:100%;display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center;padding:14px 20px;border:0;border-bottom:1px solid #eee9df;background:transparent;color:var(--ink);text-align:left; }
+.compact-list>.compact-row-button:last-child { border-bottom:0; }
+.compact-list>.compact-row-button:hover { background:#f7f3ea; }
+.compact-list>.compact-row-button:focus-visible { outline:2px solid var(--gold);outline-offset:-2px; }
+.pill-group { display:inline-flex;gap:5px;align-items:center; }
+.dashboard-row-action { width:auto;height:30px;padding:0 9px;gap:4px;display:inline-flex;align-items:center;border:1px solid #ddd5c4;background:#fff;color:var(--forest);font-size:12px;font-weight:700;border-radius:8px;white-space:nowrap; }
+.dashboard-row-action:hover { background:#e4eee6; }
+.dashboard-row-action:focus-visible { outline:2px solid var(--gold);outline-offset:2px; }
+.hero-row h1 em { font-size:.9em; }
+.dashboard-grid { align-items:start; }

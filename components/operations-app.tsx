@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  AlertTriangle, Archive, BarChart3, Bell, Box, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardCheck, ClipboardList,
+  AlertTriangle, Archive, BarChart3, Bell, Box, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardCheck, ClipboardList, RefreshCw,
   Clock3, Eye, EyeOff, FileScan, History, LogOut, Menu, MessageSquareText, Pencil, Plus, Power, Search, Settings,
   MoreHorizontal, PauseCircle, ShoppingCart, Trash2, Undo2, Users, X
 } from "lucide-react";
@@ -296,7 +296,7 @@ function useStoredState<T>(key: string, initial: T) {
   return [value, setValue] as const;
 }
 
-function Pill({ children, tone = "sage" }: { children: React.ReactNode; tone?: "sage" | "gold" | "red" | "blue" }) {
+function Pill({ children, tone = "sage" }: { children: React.ReactNode; tone?: "sage" | "gold" | "red" | "blue" | "neutral" }) {
   return <span className={`pill pill-${tone}`}>{children}</span>;
 }
 
@@ -317,6 +317,8 @@ export function OperationsApp() {
   const [query, setQuery] = useState("");
   // 庫存頁的篩選：從總覽點「低庫存」「即將過期」進來時直接套用；從側邊選單進來回到「全部」。
   const [inventoryFilter, setInventoryFilter] = useState<StockFilter>("all");
+  // 使用者在總覽按「重新整理」：這段期間總覽一律顯示載入中，不顯示舊的或0的數字。
+  const [retrying, setRetrying] = useState(false);
   const inventoryState = useInventory();
   const categoryState = useCategories();
 
@@ -437,6 +439,19 @@ export function OperationsApp() {
   const expiring = useMemo(() => getExpiringBatches(activeInventory, taipeiDateKey()), [activeInventory]);
   const pending = purchases.filter((request) => !["已入庫", "暫緩"].includes(request.status));
 
+  // 總覽的資料狀態（每個資料來源各自判斷）：還沒載入完、使用者按了重新整理、或載入失敗時，那一塊不顯示數字，
+  // 避免誤以為「今天沒事」。背景輪詢的靜默更新不算載入中，畫面不會一直閃。
+  const sourceStatus = (loading: boolean, hasData: boolean, error: string): SourceStatus => ({ loading: retrying || (loading && !hasData), failed: Boolean(error) && !retrying });
+  const dashboardStatus = {
+    inventory: sourceStatus(inventoryState.loading, inventory.length > 0, inventoryState.error),
+    purchases: session.configured ? sourceStatus(purchasesState.loading, Boolean(purchasesState.data), purchasesState.error) : { loading: false, failed: false },
+    notes: session.configured ? sourceStatus(notesState.loading, Boolean(notesState.data), notesState.error) : { loading: false, failed: false },
+  };
+  const retryDashboard = async () => {
+    setRetrying(true);
+    try { await Promise.all([inventoryState.refresh(), ...(session.configured ? [purchasesState.refresh(), notesState.refresh()] : [])]); }
+    finally { setRetrying(false); }
+  };
   const openPurchaseModal = (initialItem?: string) => {
     // 沒有現有庫存品項也能開啟：現在「新增採購需求」本身就能順手建立新庫存品項，不用先跳去庫存頁新增。
     if (initialItem) setQuery(initialItem);
@@ -497,7 +512,7 @@ export function OperationsApp() {
         </header>
 
         <section className="content">
-          {view === "dashboard" && <Dashboard lowStock={lowStock} pending={pending} expiring={expiring} notes={notes} onView={openView} onInventory={openInventory} onPurchase={() => openPurchaseModal()} />}
+          {view === "dashboard" && <Dashboard lowStock={lowStock} pending={pending} expiring={expiring} notes={notes} status={dashboardStatus} onRetry={retryDashboard} onView={openView} onInventory={openInventory} onPurchase={(name) => openPurchaseModal(name)} />}
           {view === "inventory" && <InventoryView
             items={inventory}
             filter={inventoryFilter}
@@ -829,36 +844,73 @@ function UserMenu({ email, displayName, role, demo, onSaved }: {
   </div>;
 }
 
-function Dashboard({ lowStock, pending, expiring, notes, onView, onInventory, onPurchase }: { lowStock: InventoryItem[]; pending: PurchaseRequest[]; expiring: ExpiringBatch[]; notes: HandoverNote[]; onView: (v: View) => void; onInventory: (filter: StockFilter) => void; onPurchase: () => void }) {
+type SourceStatus = { loading: boolean; failed: boolean };
+
+// 總覽：一打開就知道今天要處理什麼。資料還在載入或載入失敗時，絕不顯示「0」讓人誤以為沒事。
+function Dashboard({ lowStock, pending, expiring, notes, status, onRetry, onView, onInventory, onPurchase }: {
+  lowStock: InventoryItem[];
+  pending: PurchaseRequest[];
+  expiring: ExpiringBatch[];
+  notes: HandoverNote[];
+  status: { inventory: SourceStatus; purchases: SourceStatus; notes: SourceStatus };
+  onRetry: () => void;
+  onView: (v: View) => void;
+  onInventory: (filter: StockFilter) => void;
+  onPurchase: (itemName?: string) => void;
+}) {
   const now = new Date();
   const greeting = greetingForHour(getTaipeiHour(now));
+  const urgent = pending.filter((r) => r.priority === "急件");
+  // 待處理採購：急件排最前面，其他照原本順序。
+  const pendingSorted = pending.map((r, i) => ({ r, i })).sort((a, b) => (a.r.priority === "急件" ? 0 : 1) - (b.r.priority === "急件" ? 0 : 1) || a.i - b.i).map(({ r }) => r);
+  const ready = (st: SourceStatus) => !st.loading && !st.failed;
+  const failedNames = [status.inventory.failed ? "庫存" : "", status.purchases.failed ? "採購需求" : "", status.notes.failed ? "交接留言" : ""].filter(Boolean);
+  const anyLoading = status.inventory.loading || status.purchases.loading || status.notes.loading;
+  // 標題只用已經載入好的資料；庫存還沒好時不下「都充足」的結論。
+  const todo = [
+    ready(status.inventory) && lowStock.length > 0 ? `${lowStock.length} 項低庫存` : "",
+    ready(status.inventory) && expiring.length > 0 ? `${expiring.length} 批快到期` : "",
+    ready(status.purchases) && urgent.length > 0 ? `${urgent.length} 張急件採購` : "",
+  ].filter(Boolean);
+  const value = (st: SourceStatus, n: number) => ready(st) ? n : null;
   return <>
-    <div className="hero-row"><div><p>{formatTaipeiDateLabel(now)}</p><h1>{greeting}，今天有 <em>{lowStock.length}</em> 項庫存需要注意</h1></div><button className="primary-button" onClick={onPurchase}><Plus size={19} />新增採購需求</button></div>
+    <div className="hero-row"><div><p>{formatTaipeiDateLabel(now)}</p>
+      <h1>{greeting}，{todo.length > 0 ? <>今天要處理：<em>{todo.join("、")}</em></> : anyLoading ? "正在整理今天的資料…" : failedNames.length > 0 ? "有些資料沒有載入成功" : "今天庫存都充足，沒有急件"}</h1>
+    </div><button className="primary-button" onClick={() => onPurchase()}><Plus size={19} />新增採購需求</button></div>
+    {failedNames.length > 0 && <div className="error-box dashboard-alert" role="alert"><span>{failedNames.join("、")}資料沒有載入成功，下面的數字可能不正確，請不要依照這些數字判斷要不要補貨。</span><button type="button" className="text-button" onClick={onRetry}><RefreshCw size={14} />重新整理</button></div>}
     <div className="stat-grid">
-      <Stat icon={AlertTriangle} label="低庫存" value={lowStock.length} tone="red" onClick={() => onInventory("low")} />
-      <Stat icon={ShoppingCart} label="待處理採購" value={pending.length} tone="sage" onClick={() => onView("purchases")} />
-      <Stat icon={Clock3} label="即將過期" value={expiring.length} tone="gold" onClick={() => onInventory("expiring")} />
-      <Stat icon={MessageSquareText} label="交接留言" value={notes.length} tone="blue" onClick={() => onView("notes")} />
+      <Stat icon={AlertTriangle} label="低庫存" value={value(status.inventory, lowStock.length)} tone="red" onClick={() => onInventory("low")} />
+      <Stat icon={ShoppingCart} label="待處理採購" value={value(status.purchases, pending.length)} tone="sage" onClick={() => onView("purchases")} />
+      <Stat icon={Clock3} label="即將過期" value={value(status.inventory, expiring.length)} tone="gold" onClick={() => onInventory("expiring")} />
+      <Stat icon={MessageSquareText} label="交接留言" value={value(status.notes, notes.length)} tone="blue" onClick={() => onView("notes")} />
     </div>
     <div className="dashboard-grid">
       <Panel title="低庫存品項" icon={Box} action="查看全部" onAction={() => onInventory("low")}>
-        <div className="compact-list">{lowStock.slice(0, 5).map((item) => <div key={item.id}><span className="item-avatar">{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{item.category}</small></div><b>{formatNumber(item.quantity)}{item.unit}</b><span>安全 {formatNumber(item.safetyStock)}{item.unit}</span></div>)}</div>
+        {!ready(status.inventory) ? <PanelPlaceholder loading={status.inventory.loading} /> : lowStock.length === 0 ? <p className="panel-empty">目前沒有低庫存的品項，庫存都在安全數量以上。</p>
+          : <div className="compact-list">{lowStock.slice(0, 5).map((item) => <div key={item.id}><span className="item-avatar">{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{item.category} · 安全庫存 {formatNumber(item.safetyStock)}{item.unit}</small></div><b className="danger-text">{formatNumber(item.quantity)}{item.unit}</b><button type="button" className="row-text-button dashboard-row-action" onClick={() => onPurchase(item.name)}><ShoppingCart size={14} />採購</button></div>)}</div>}
       </Panel>
       <Panel title="待處理採購" icon={ShoppingCart} action="管理採購" onAction={() => onView("purchases")}>
-        <div className="compact-list">{pending.slice(0, 5).map((r) => <div key={r.id}><span className="item-avatar">購</span><div><strong>{r.itemName}</strong><small>{r.requester} · {r.requestedAt.slice(5, 10)}</small></div><b>{r.quantity}{r.unit}</b><Status status={r.status} /></div>)}</div>
+        {!ready(status.purchases) ? <PanelPlaceholder loading={status.purchases.loading} /> : pending.length === 0 ? <p className="panel-empty">沒有待處理的採購需求。</p>
+          : <div className="compact-list">{pendingSorted.slice(0, 5).map((r) => <button type="button" key={r.id} className="compact-row-button" onClick={() => onView("purchases")}><div><strong>{r.itemName}</strong><small>{r.requester} · {r.requestedAt.slice(5, 10)}</small></div><b>{r.quantity}{r.unit}</b><span className="pill-group">{r.priority === "急件" && <Pill tone="red">急件</Pill>}<Status status={r.status} /></span></button>)}</div>}
       </Panel>
       <Panel title="即將過期食材" icon={Clock3} action="查看庫存" onAction={() => onInventory("expiring")}>
-        <div className="expiry-list">{expiring.length === 0 ? <p className="notif-empty">{EXPIRY_WINDOW_LABEL}內沒有到期的批次。</p> : expiring.slice(0, 6).map(({ item, batch, expiryDate, daysLeft }) => <div key={batch.id}><div><strong>{item.name}</strong><small>這批 {formatNumber(batch.quantity)}{item.unit} · {expiryDate} 到期</small></div><Pill tone={daysLeft < 0 ? "red" : "gold"}>{expiryLabel(daysLeft)}</Pill></div>)}</div>
+        {!ready(status.inventory) ? <PanelPlaceholder loading={status.inventory.loading} /> : <div className="expiry-list">{expiring.length === 0 ? <p className="notif-empty">{EXPIRY_WINDOW_LABEL}內沒有到期的批次。</p> : expiring.slice(0, 6).map(({ item, batch, expiryDate, daysLeft }) => <div key={batch.id}><div><strong>{item.name}</strong><small>這批 {formatNumber(batch.quantity)}{item.unit} · {expiryDate} 到期</small></div><Pill tone={daysLeft < 0 ? "red" : "gold"}>{expiryLabel(daysLeft)}</Pill></div>)}</div>}
       </Panel>
       <Panel title="最新交接留言" icon={MessageSquareText} action="查看留言" onAction={() => onView("notes")}>
-        <div className="note-list">{notes.slice(0, 3).map((note) => <div key={note.id}><span className={note.important ? "note-dot important" : "note-dot"} /><div><strong>{note.content}</strong><small>{note.author} · {note.createdAt}</small></div></div>)}</div>
+        {!ready(status.notes) ? <PanelPlaceholder loading={status.notes.loading} /> : notes.length === 0 ? <p className="panel-empty">還沒有交接留言。</p>
+          : <div className="note-list">{notes.slice(0, 3).map((note) => <div key={note.id}><span className={note.important ? "note-dot important" : "note-dot"} /><div><strong>{note.content}</strong><small>{note.author} · {note.createdAt}</small></div></div>)}</div>}
       </Panel>
     </div>
   </>;
 }
 
-function Stat({ icon: Icon, label, value, tone, onClick }: { icon: typeof Box; label: string; value: number; tone: string; onClick: () => void }) {
-  return <button className={`stat-card stat-${tone}`} onClick={onClick}><span><Icon size={24} /></span><div><small>{label}</small><strong>{value}</strong></div><ChevronRight size={20} /></button>;
+// 資料還沒好時的區塊內容：載入中或「沒有載入成功」，不顯示空白或假的「沒有」。
+function PanelPlaceholder({ loading }: { loading: boolean }) {
+  return <p className="panel-empty">{loading ? "載入中…" : "資料沒有載入成功，請按上方「重新整理」。"}</p>;
+}
+
+function Stat({ icon: Icon, label, value, tone, onClick }: { icon: typeof Box; label: string; value: number | null; tone: string; onClick: () => void }) {
+  return <button className={`stat-card stat-${tone}`} onClick={onClick}><span><Icon size={24} /></span><div><small>{label}</small><strong>{value === null ? "—" : value}</strong></div><ChevronRight size={20} /></button>;
 }
 
 function Panel({ title, icon: Icon, action, onAction, children }: { title: string; icon: typeof Box; action: string; onAction: () => void; children: React.ReactNode }) {
@@ -1264,7 +1316,8 @@ function NotesView({ notes, loading, loadError, canManage, onNew, onDelete }: { 
 
 
 function Status({ status }: { status: PurchaseStatus }) {
-  const tone = status === "待確認" ? "red" : status === "已訂購" ? "blue" : "gold";
+  // 紅色只留給真正要注意的（低庫存、過期、急件）；待確認只是還沒處理，用中性色。
+  const tone = status === "待確認" ? "neutral" : status === "已訂購" ? "blue" : "gold";
   return <Pill tone={tone}>{status}</Pill>;
 }
 

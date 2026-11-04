@@ -77,3 +77,51 @@ button { cursor:pointer; }
 
 .batch-expiry-list { display:grid; gap:2px; }.batch-expiry-list small { display:block; white-space:nowrap; }
 .purchase-card .priority-toggle { display:flex;gap:4px;margin-top:8px;background:#f3f0e8;border-radius:8px;padding:3px; }.purchase-card .priority-toggle button { flex:1;margin:0;padding:5px;background:transparent;color:var(--muted);font-weight:600; }.purchase-card .priority-toggle button.active { background:white;color:var(--forest);font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,.08); }.purchase-card .priority-toggle button.active.urgent { background:var(--red);color:white; }
+/* 進貨單：切換模式前的確認、入庫失敗訊息、入庫前「還差什麼」清單 */
+.mode-confirm { margin-top:12px;border:1px solid #e9cfc4;background:#fbeee8;color:#6e3324;border-radius:12px;padding:12px 13px;font-size:13px;line-height:1.6; }
+.mode-confirm p { margin:0 0 10px; }
+.mode-confirm div { display:flex;gap:8px;flex-wrap:wrap; }
+.mode-confirm button { flex:1;padding:9px 12px; }
+.mode-confirm .confirm-danger { border:0;border-radius:10px;background:#a64732;color:#fff;font-weight:700;display:inline-flex;align-items:center;justify-content:center; }
+.mode-confirm .confirm-danger:hover { background:#8a3626; }
+.analysis-card .receipt-submit-error { margin:0 20px 12px;display:grid;gap:3px; }
+.receipt-missing { margin:0 20px 12px;padding:11px 13px;border-radius:10px;background:#f3efe4;color:var(--ink);font-size:13px; }
+.receipt-missing small { display:block;font-weight:700; }
+.receipt-missing ul { margin:7px 0 0;padding:0;list-style:none;display:flex;flex-wrap:wrap;gap:6px; }
+.receipt-missing li button { border:1px solid #d9cfba;background:#fff;color:var(--forest);border-radius:999px;padding:6px 11px;font-weight:700;font-size:13px; }
+.receipt-missing li button:hover { background:#e4eee6; }
+.receipt-missing li button:focus-visible,.mode-confirm button:focus-visible { outline:2px solid var(--gold);outline-offset:2px; }
+/* 主要／次要按鈕不能按時：變成淡灰綠、拿掉陰影、滑鼠變禁止符號（原本看起來跟能按時一樣）。保存中改成等待游標。 */
+.primary-button:disabled:not(.analyze-button),.primary-button:disabled:not(.analyze-button):hover { background:#c9d1cc;color:#43534d;box-shadow:none;cursor:not-allowed; }
+.secondary-button:disabled,.secondary-button:disabled:hover { background:#efebe2;color:#8a948f;cursor:not-allowed; }
+.primary-button:disabled[aria-busy="true"] { cursor:wait; }
+/* 進貨單：入庫成功提示、品項狀態標籤、收合的一行摘要、批次按鈕 */
+.receipt-saved { display:flex;align-items:flex-start;gap:11px;margin:18px 20px 0;padding:13px 14px;border-radius:12px;background:#e4eee6;color:#1f4a3d; }
+.receipt-saved>svg { flex:none;margin-top:2px;color:var(--forest); }
+.receipt-saved div { display:grid;gap:3px;flex:1;font-size:13px; }
+.receipt-saved strong { font-size:15px; }
+.receipt-saved small { color:#3d5f53; }
+.receipt-saved button { border:0;background:transparent;color:#1f4a3d;border-radius:50%;width:28px;height:28px;display:grid;place-items:center; }
+.receipt-saved button:hover { background:rgba(21,63,53,.08); }
+.line-status { justify-self:start;display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:700; }
+.line-status-ok { background:#e4eee6;color:var(--forest); }
+.line-status-todo { background:#fff3d5;color:#71531e; }
+.line-match-hint { margin:0;color:#5b6a65;font-size:13px; }
+.line-footer-actions { display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap; }
+.receipt-lines article.line-collapsed { grid-template-columns:auto 1fr auto auto auto;align-items:center;gap:12px;padding:10px 14px; }
+.line-collapsed>svg { color:var(--forest); }
+.line-collapsed div { display:grid;gap:2px;min-width:0; }
+.line-collapsed div strong { font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.line-collapsed div small { color:#5b6a65;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.line-collapsed>span { font-size:13px;font-variant-numeric:tabular-nums;white-space:nowrap; }
+.receipt-bulk-actions { display:flex;flex-wrap:wrap;gap:14px;padding:4px 20px 10px; }
+@media(max-width:760px){ .receipt-lines article.line-collapsed { grid-template-columns:auto 1fr auto; } .line-collapsed>span:nth-of-type(1) { display:none; } }
+.receipt-lines input[aria-invalid="true"] { border-color:#a64732;background:#fbeee8; }
+/* 進貨單：批次按鈕看起來可以點（圖示＋滑過底線）、刪除後的復原列 */
+.receipt-bulk-actions .text-button { gap:5px; }
+.receipt-bulk-actions .text-button:hover,.receipt-undo .text-button:hover { text-decoration:underline;text-underline-offset:3px; }
+.receipt-undo { display:flex;align-items:center;gap:12px;margin:0 20px 10px;padding:9px 12px;border-radius:10px;background:#efebe2;color:var(--ink);font-size:13px; }
+.receipt-undo span { flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.receipt-undo .text-button { gap:4px; }
+.receipt-undo>button:last-child { border:0;background:transparent;color:#5b6a65;width:26px;height:26px;border-radius:50%;display:grid;place-items:center; }
+.receipt-undo>button:last-child:hover { background:rgba(0,0,0,.06); }

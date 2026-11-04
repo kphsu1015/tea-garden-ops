@@ -214,7 +214,7 @@ export function expiryLabel(daysLeft: number): string {
 // --- 進貨單品項比對（純函式）：AI辨識的品名如果沒有「精確」對應現有庫存，就不可以自動建立，
 // 改由管理員從最多5個相似品項中選擇、建立新品項，或忽略此品項。 ---
 
-function normalizeItemName(name: string): string {
+export function normalizeItemName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, "");
 }
 

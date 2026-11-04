@@ -125,3 +125,9 @@ button { cursor:pointer; }
 .receipt-undo .text-button { gap:4px; }
 .receipt-undo>button:last-child { border:0;background:transparent;color:#5b6a65;width:26px;height:26px;border-radius:50%;display:grid;place-items:center; }
 .receipt-undo>button:last-child:hover { background:rgba(0,0,0,.06); }
+/* 進貨單：可能重複的提醒、欄位說明 */
+.line-dup-hint { margin:0;padding:8px 11px;border-radius:9px;background:#fff3d5;color:#71531e;font-size:13px;line-height:1.6; }
+.line-dup-chip { margin-left:8px;padding:1px 7px;border-radius:999px;background:#fff3d5;color:#71531e;font-size:11px;font-style:normal;font-weight:700;vertical-align:1px; }
+.field-hint { color:#5b6a65;font-size:12px;font-weight:400;line-height:1.5; }
+.receipt-lines .check-label { display:flex;align-items:center;gap:8px;justify-content:flex-start; }
+.receipt-lines .check-label input { width:auto;margin:0; }

@@ -7,7 +7,7 @@ import { compressImage } from "@/lib/compress-image";
 import { PENDING_CATEGORY } from "@/lib/categories-shared";
 import { formatNumber } from "@/lib/format";
 import { generateId } from "@/lib/id";
-import { findExactInventoryMatch, findSimilarInventoryItems, roundQuantity } from "@/lib/inventory";
+import { findExactInventoryMatch, findSimilarInventoryItems, normalizeItemName, roundQuantity } from "@/lib/inventory";
 import { formatCurrency } from "@/lib/purchase-report";
 import { calculateAmountMismatch, calculateReceiptTotals, deriveChargeAmountFromLine, splitAnalysisLines, type RawAnalysisLine } from "@/lib/receipt-calc";
 import { createClient } from "@/lib/supabase/client";
@@ -112,8 +112,9 @@ function rawLineToWorkingLine(line: RawAnalysisLine, inventory: InventoryItem[],
     itemName: line.itemName,
     quantity: line.quantity,
     unit: line.unit,
-    unitPrice: line.unitPrice || undefined,
-    totalPrice: line.totalPrice || undefined,
+    // AI回傳null＝沒辨識到金額（留空）；0＝真的0元（例如贈品），要保留。
+    unitPrice: typeof line.unitPrice === "number" ? line.unitPrice : undefined,
+    totalPrice: typeof line.totalPrice === "number" ? line.totalPrice : undefined,
     category: line.category,
     action: exactMatch ? "existing" : null,
     selectedExistingId: exactMatch?.id,
@@ -338,6 +339,20 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
   // 入庫按鈕旁的「還差什麼」清單：按鈕變灰時直接寫出原因，點一下跳到要補的地方（手機、平板沒有滑鼠提示也看得到）。
   const unresolvedLines = analysis ? analysis.lines.filter((line) => !isLineResolved(line)) : [];
   const invalidCharges = analysis ? analysis.charges.filter((c) => !(Number.isFinite(c.amount) && c.amount >= 0)) : [];
+  const duplicateOf = new Map<string, number>();
+  if (analysis) {
+    const seen = new Map<string, number>();
+    analysis.lines.forEach((line, index) => {
+      if (line.action === "ignore") return;
+      // 一律用「最後會進到哪個品項的名稱」比：對應現有品項就用庫存品項的名稱，否則用這一列打的名稱。
+      const matched = line.action === "existing" && line.selectedExistingId ? inventory.find((item) => item.id === line.selectedExistingId) : undefined;
+      const who = normalizeItemName(matched?.name ?? line.itemName);
+      if (!who) return;
+      const key = `${who}|${line.expiryDate ?? ""}`;
+      const first = seen.get(key);
+      if (first === undefined) seen.set(key, index); else duplicateOf.set(line.id, first);
+    });
+  }
   const resolvedIds = analysis ? analysis.lines.filter(isLineResolved).map((l) => l.id) : [];
   const resolvedCount = resolvedIds.length;
   const collapsedCount = resolvedIds.filter((id) => collapsed.has(id)).length;
@@ -518,7 +533,7 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
           {analysis.lines.length === 0 && <p className="receipt-section-empty">{mode === "manual" ? "還沒有品項，庫存裡已經有的品項請點「選擇現有品項」，新品項請點「手動新增品項」。" : "這張單據沒有辨識到庫存品項。"}</p>}
           <div className="receipt-lines">{analysis.lines.map((line) => isLineResolved(line) && collapsed.has(line.id) && !badAmountLines.includes(line) ? <article key={line.id} id={`receipt-line-${line.id}`} className="line-collapsed">
             <Check size={16} />
-            <div><strong>{line.itemName || "（未命名品項）"}</strong><small>{lineSummary(line, inventory)}</small></div>
+            <div><strong>{line.itemName || "（未命名品項）"}{duplicateOf.has(line.id) && <em className="line-dup-chip">可能重複</em>}</strong><small>{lineSummary(line, inventory)}</small></div>
             <span>{formatNumber(line.quantity)}{line.unit}</span>
             <span>{line.totalPrice !== undefined ? formatCurrency(line.totalPrice) : "—"}</span>
             <button type="button" className="text-button" onClick={() => setLineCollapsed(line.id, false)} aria-label={`展開編輯 ${line.itemName}`}>展開</button>
@@ -526,6 +541,7 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
             <button className="remove-line" aria-label="刪除品項" title="刪除品項" onClick={() => removeLine(line.id)}><X size={16} /></button>
             {isLineResolved(line) ? <span className="line-status line-status-ok"><Check size={13} />已對應</span> : <span className="line-status line-status-todo">待對應</span>}
             <label>品項名稱<input value={line.itemName} onChange={(e) => updateLine(line.id, { itemName: e.target.value })} /></label>
+            {duplicateOf.has(line.id) && <p className="line-dup-hint">這張單的第 {(duplicateOf.get(line.id) ?? 0) + 1} 項也是「{(line.itemName.trim() || analysis.lines[duplicateOf.get(line.id) ?? 0]?.itemName.trim())}」，有效期限也一樣，是不是重複輸入了？如果真的是兩筆，可以不用理會。</p>}
             {line.action === null && <ExistingItemPicker inventory={inventory} categories={categories} onUpdate={(patch) => updateLine(line.id, patch)} />}
             <div className="line-grid"><label>數量<input type="number" min="0.5" step="0.5" value={line.quantity} onChange={(e) => updateLine(line.id, { quantity: roundQuantity(Number(e.target.value)) })} /></label><label>單位<input value={line.unit} onChange={(e) => updateLine(line.id, { unit: e.target.value })} /></label><label>金額<input data-field="amount" type="number" min="0" value={line.totalPrice ?? ""} aria-invalid={line.totalPrice !== undefined && !(line.totalPrice >= 0)} onChange={(e) => updateLine(line.id, { totalPrice: e.target.value === "" ? undefined : Number(e.target.value) })} /></label></div>
             {line.action !== "ignore" && <label>有效期限（可不填，同品項不同日期請分開列）<input type="date" value={line.expiryDate ?? ""} onChange={(e) => updateLine(line.id, { expiryDate: e.target.value || undefined })} /></label>}
@@ -611,7 +627,7 @@ function ReceiptLineMatch({ line, inventory, categories, onUpdate, onUpdateNewIt
         <label>品項名稱<input required value={line.newItem.name} onChange={(e) => onUpdateNewItem({ name: e.target.value })} /></label>
         <label>大分類<select required disabled={categories.length === 0} value={line.newItem.category} onChange={(e) => onUpdateNewItem({ category: e.target.value })}><option value="">請選擇</option>{categories.map((c) => <option key={c}>{c}</option>)}</select></label>
       </div>
-      <label>計算單位<input required value={line.newItem.unit} onChange={(e) => onUpdateNewItem({ unit: e.target.value })} /></label>
+      <label>計算單位<input required value={line.newItem.unit} onChange={(e) => onUpdateNewItem({ unit: e.target.value })} placeholder="例如：包、瓶、盒、公斤" /><small className="field-hint">庫存數量用什麼單位計算。之後盤點、扣庫存、提醒補貨都用這個單位。</small></label>
       <label>安全庫存<input type="number" min="0" step="0.5" value={line.newItem.safetyStock} onChange={(e) => onUpdateNewItem({ safetyStock: Math.max(0, roundQuantity(Number(e.target.value))) })} /></label>
       <label className="check-label"><input type="checkbox" checked={line.newItem.usageForecastEnabled} onChange={(e) => onUpdateNewItem({ usageForecastEnabled: e.target.checked })} />啟用預估使用量</label>
       {line.newItem.usageForecastEnabled && <div className="form-grid">

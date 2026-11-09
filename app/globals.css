@@ -273,3 +273,9 @@ td .row-menu-list button small { display:inline;margin-top:0; }
   .bulk-summary { width:100%; }
   .bulk-footer-actions .secondary-button,.bulk-footer-actions .primary-button { flex:1; }
 }
+
+.stat-hint { display:block; margin-top:3px; font-size:11.5px; font-style:normal; color:var(--muted); line-height:1.4; }
+.stat-hint.urgent { color:var(--red); font-weight:700; }
+.panel-more { display:flex; align-items:center; justify-content:center; gap:4px; width:100%; border:0; border-top:1px solid #eee9df; background:none; padding:12px; color:var(--forest); font-size:13px; font-weight:700; }
+.panel-more:hover { background:#f6f2e8; }
+.expiry-list .pill-group { display:flex; align-items:center; gap:8px; }

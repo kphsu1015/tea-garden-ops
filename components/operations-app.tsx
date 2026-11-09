@@ -952,24 +952,24 @@ function Dashboard({ lowStock, pending, expiring, notes, status, onRetry, onView
     </div><button className="primary-button" onClick={() => onPurchase()}><Plus size={19} />新增採購需求</button></div>
     {failedNames.length > 0 && <div className="error-box dashboard-alert" role="alert"><span>{failedNames.join("、")}資料沒有載入成功，下面的數字可能不正確，請不要依照這些數字判斷要不要補貨。</span><button type="button" className="text-button" onClick={onRetry}><RefreshCw size={14} />重新整理</button></div>}
     <div className="stat-grid">
-      <Stat icon={AlertTriangle} label="低庫存" value={value(status.inventory, lowStock.length)} tone="red" onClick={() => onInventory("low")} />
-      <Stat icon={ShoppingCart} label="待處理採購" value={value(status.purchases, pending.length)} tone="sage" onClick={() => onView("purchases")} />
-      <Stat icon={Clock3} label="即將過期" value={value(status.inventory, expiring.length)} tone="gold" onClick={() => onInventory("expiring")} />
-      <Stat icon={MessageSquareText} label="交接留言" value={value(status.notes, notes.length)} tone="blue" onClick={() => onView("notes")} />
+      <Stat icon={AlertTriangle} label="低庫存" hint="少於安全庫存或預估用量" value={value(status.inventory, lowStock.length)} tone="red" onClick={() => onInventory("low")} />
+      <Stat icon={ShoppingCart} label="待處理採購" hint={ready(status.purchases) && urgent.length > 0 ? `其中 ${urgent.length} 張急件` : "還沒入庫的需求"} urgentHint={ready(status.purchases) && urgent.length > 0} value={value(status.purchases, pending.length)} tone="sage" onClick={() => onView("purchases")} />
+      <Stat icon={Clock3} label="快到期" hint={`已過期或${EXPIRY_WINDOW_LABEL}內到期`} value={value(status.inventory, expiring.length)} tone="gold" onClick={() => onInventory("expiring")} />
+      <Stat icon={MessageSquareText} label="交接留言" hint="全部留言" value={value(status.notes, notes.length)} tone="blue" onClick={() => onView("notes")} />
     </div>
     <div className="dashboard-grid">
-      <Panel title="低庫存品項" icon={Box} action="查看全部" onAction={() => onInventory("low")}>
+      <Panel title="低庫存品項" icon={Box} more={ready(status.inventory) ? lowStock.length - 5 : 0} moreLabel="項低庫存" onMore={() => onInventory("low")}>
         {!ready(status.inventory) ? <PanelPlaceholder loading={status.inventory.loading} /> : lowStock.length === 0 ? <p className="panel-empty">目前沒有低庫存的品項，庫存都在安全數量以上。</p>
           : <div className="compact-list">{lowStock.slice(0, 5).map((item) => <div key={item.id}><span className="item-avatar">{item.name.slice(0, 1)}</span><div><strong>{item.name}</strong><small>{item.category} · 安全庫存 {formatNumber(item.safetyStock)}{item.unit}</small></div><b className="danger-text">{formatNumber(item.quantity)}{item.unit}</b><button type="button" className="row-text-button dashboard-row-action" onClick={() => onPurchase(item.name)}><ShoppingCart size={14} />採購</button></div>)}</div>}
       </Panel>
-      <Panel title="待處理採購" icon={ShoppingCart} action="管理採購" onAction={() => onView("purchases")}>
+      <Panel title="待處理採購" icon={ShoppingCart} more={ready(status.purchases) ? pending.length - 5 : 0} moreLabel="張待處理採購" onMore={() => onView("purchases")}>
         {!ready(status.purchases) ? <PanelPlaceholder loading={status.purchases.loading} /> : pending.length === 0 ? <p className="panel-empty">沒有待處理的採購需求。</p>
           : <div className="compact-list">{pendingSorted.slice(0, 5).map((r) => <button type="button" key={r.id} className="compact-row-button" onClick={() => onView("purchases")}><div><strong>{r.itemName}</strong><small>{r.requester} · {r.requestedAt.slice(5, 10)}</small></div><b>{r.quantity}{r.unit}</b><span className="pill-group">{r.priority === "急件" && <Pill tone="red">急件</Pill>}<Status status={r.status} /></span></button>)}</div>}
       </Panel>
-      <Panel title="即將過期食材" icon={Clock3} action="查看庫存" onAction={() => onInventory("expiring")}>
-        {!ready(status.inventory) ? <PanelPlaceholder loading={status.inventory.loading} /> : <div className="expiry-list">{expiring.length === 0 ? <p className="notif-empty">{EXPIRY_WINDOW_LABEL}內沒有到期的批次。</p> : expiring.slice(0, 6).map(({ item, batch, expiryDate, daysLeft }) => <div key={batch.id}><div><strong>{item.name}</strong><small>這批 {formatNumber(batch.quantity)}{item.unit} · {expiryDate} 到期</small></div><Pill tone={daysLeft < 0 ? "red" : "gold"}>{expiryLabel(daysLeft)}</Pill></div>)}</div>}
+      <Panel title="快到期食材" icon={Clock3} more={ready(status.inventory) ? expiring.length - 6 : 0} moreLabel="批快到期" onMore={() => onInventory("expiring")}>
+        {!ready(status.inventory) ? <PanelPlaceholder loading={status.inventory.loading} /> : <div className="expiry-list">{expiring.length === 0 ? <p className="panel-empty">{EXPIRY_WINDOW_LABEL}內沒有到期的批次。</p> : expiring.slice(0, 6).map(({ item, batch, expiryDate, daysLeft }) => <div key={batch.id}><div><strong>{item.name}</strong><small>這批 {formatNumber(batch.quantity)}{item.unit} · {expiryDate} 到期</small></div><span className="pill-group"><Pill tone={daysLeft < 0 ? "red" : "gold"}>{expiryLabel(daysLeft)}</Pill><button type="button" className="row-text-button dashboard-row-action" onClick={() => onInventory("expiring")}>去處理</button></span></div>)}</div>}
       </Panel>
-      <Panel title="最新交接留言" icon={MessageSquareText} action="查看留言" onAction={() => onView("notes")}>
+      <Panel title="最新交接留言" icon={MessageSquareText} more={ready(status.notes) ? notes.length - 3 : 0} moreLabel="則留言" onMore={() => onView("notes")}>
         {!ready(status.notes) ? <PanelPlaceholder loading={status.notes.loading} /> : notes.length === 0 ? <p className="panel-empty">還沒有交接留言。</p>
           : <div className="note-list">{notes.slice(0, 3).map((note) => <div key={note.id}><span className={note.important ? "note-dot important" : "note-dot"} /><div><strong>{note.content}</strong><small>{note.author} · {note.createdAt}</small></div></div>)}</div>}
       </Panel>
@@ -982,12 +982,13 @@ function PanelPlaceholder({ loading }: { loading: boolean }) {
   return <p className="panel-empty">{loading ? "載入中…" : "資料沒有載入成功，請按上方「重新整理」。"}</p>;
 }
 
-function Stat({ icon: Icon, label, value, tone, onClick }: { icon: typeof Box; label: string; value: number | null; tone: string; onClick: () => void }) {
-  return <button className={`stat-card stat-${tone}`} onClick={onClick}><span><Icon size={24} /></span><div><small>{label}</small><strong>{value === null ? "—" : value}</strong></div><ChevronRight size={20} /></button>;
+function Stat({ icon: Icon, label, hint, urgentHint, value, tone, onClick }: { icon: typeof Box; label: string; hint?: string; urgentHint?: boolean; value: number | null; tone: string; onClick: () => void }) {
+  return <button className={`stat-card stat-${tone}`} onClick={onClick}><span><Icon size={24} /></span><div><small>{label}</small><strong>{value === null ? "—" : value}</strong>{hint && <em className={urgentHint ? "stat-hint urgent" : "stat-hint"}>{hint}</em>}</div><ChevronRight size={20} /></button>;
 }
 
-function Panel({ title, icon: Icon, action, onAction, children }: { title: string; icon: typeof Box; action: string; onAction: () => void; children: React.ReactNode }) {
-  return <article className="panel"><header><h2><Icon size={21} />{title}</h2><button onClick={onAction}>{action}<ChevronRight size={16} /></button></header>{children}</article>;
+// 面板標題不再放「查看」連結（上方統計卡已是入口）；只有清單被截斷時，在底部提示還有幾筆並可點進去。
+function Panel({ title, icon: Icon, more = 0, moreLabel = "", onMore, children }: { title: string; icon: typeof Box; more?: number; moreLabel?: string; onMore?: () => void; children: React.ReactNode }) {
+  return <article className="panel"><header><h2><Icon size={21} />{title}</h2></header>{children}{more > 0 && onMore && <button type="button" className="panel-more" onClick={onMore}>還有 {more} {moreLabel}，查看全部<ChevronRight size={15} /></button>}</article>;
 }
 
 function PageHeader({ title, subtitle, button, onClick }: { title: string; subtitle: string; button?: string; onClick?: () => void }) {

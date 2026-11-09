@@ -26,6 +26,11 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       return NextResponse.json({ error: "無法停用自己的帳號（會導致自己無法再管理任何資料），請請其他管理員協助停用。" }, { status: 400 });
     }
 
+    // 同理：自己把自己降級，也可能讓自己失去管理權限。
+    if (typeof body.role === "string" && body.role !== "admin" && id === session.userId && session.role === "admin") {
+      return NextResponse.json({ error: "不能修改自己的管理員身分，請其他管理員幫你改。" }, { status: 400 });
+    }
+
     const updates: Record<string, unknown> = {};
 
     if (typeof body.role === "string") {
@@ -58,6 +63,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       .eq("id", id)
       .select("id,display_name,email,role,active,created_at");
     if (error) {
+      if (error.code === "P0010") return NextResponse.json({ error: "這是唯一的管理員，要先指定另一位管理員，才能降級或停用。" }, { status: 400 });
       if (error.code === "42501") return NextResponse.json({ error: FORBIDDEN_MESSAGE }, { status: 403 });
       if (error.code === "P0001") return NextResponse.json({ error: "查看者角色已移除，請改指定管理員、訂貨管家或管家。" }, { status: 400 });
       throw error;

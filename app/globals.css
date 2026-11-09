@@ -388,3 +388,37 @@ td .row-menu-list button small { display:inline;margin-top:0; }
 /* 摘要卡：總額佔 2 格＋其他 6 張，寬螢幕剛好排成 2 列 4 欄，不留孤兒卡片 */
 @media(min-width:1051px){ .report-summary-grid { grid-template-columns:repeat(4,1fr); } }
 @media(max-width:1050px){ .report-summary-grid { grid-template-columns:repeat(2,1fr); } }
+
+/* 員工管理頁 */
+.staff-role-guide { display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:10px 0; }
+.staff-role-guide>div { background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px; }
+.staff-role-guide p { margin:6px 0 0;line-height:1.6;font-size:13px; }
+.staff-invites { margin-bottom:16px; }
+.staff-invites header p { margin:4px 0 0;font-size:13px;color:#5b6a65; }
+.staff-invite-list { list-style:none;margin:12px 0 0;padding:0;display:grid;gap:8px; }
+.staff-invite-list li { display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;background:#fff;border:1px solid var(--line);border-radius:10px; }
+.staff-invite-list li>span:first-child { display:grid;gap:2px;min-width:0; }
+.staff-invite-list small { color:#5b6a65;font-size:12px; }
+.staff-invite-list .error-box { flex-basis:100%;margin:0; }
+.staff-table td small { display:block;color:#5b6a65;font-size:12px;margin-top:2px; }
+.staff-table .field-hint { color:#8a6d3b; }
+.staff-self { margin-left:6px;color:#5b6a65;font-size:12px; }
+.staff-inactive td { color:#6b7872; }
+.staff-name-input { width:100%;min-width:140px;height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font:inherit; }
+.staff-table select { height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:#fff; }
+.staff-footnote { margin-top:12px; }
+@media(max-width:760px){
+  .staff-table { min-width:0; }
+  .staff-table thead { display:none; }
+  .staff-table,.staff-table tbody,.staff-table td { display:block; }
+  .staff-table tr { display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;padding:12px 15px;border-bottom:1px solid #eee9df; }
+  .staff-table td { padding:0;border:0; }
+  .staff-table td::before { content:attr(data-label);display:block;color:#5b6a65;font-size:11px;margin-bottom:3px; }
+  .staff-table td[data-label="姓名"],.staff-table td[data-label="操作"] { grid-column:1/-1; }
+  .staff-table td[data-label="姓名"]::before,.staff-table td[data-label="操作"]::before { display:none; }
+  .staff-table td[data-label="姓名"] strong { font-size:15px; }
+  .staff-table .row-actions { gap:6px; }
+  .staff-table .row-actions .row-text-button { flex:1;height:38px;justify-content:center; }
+  .staff-invite-list .row-actions .row-text-button { flex:1;height:38px;justify-content:center; }
+}
+.staff-table td[data-label="姓名"] strong { display:inline; }

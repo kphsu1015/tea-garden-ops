@@ -46,3 +46,43 @@ export function mapStaffRow(row: StaffProfileRow): StaffProfile {
     createdAt: row.created_at,
   };
 }
+
+// ===== 員工管理頁用：角色說明、搜尋篩選、最後一位管理員防護 =====
+
+// 三種角色各自能做什麼。內容是照目前程式裡實際的權限寫的（畫面按鈕開關與資料庫政策），改權限時要一起改這裡。
+export const STAFF_ROLE_PERMISSIONS: Array<{ role: AssignableStaffRole; can: string; cannot: string }> = [
+  { role: "admin", can: "所有功能：管理員工與權限、管理品項、處理採購、看進貨報表、修改進貨單金額、刪除與復原進貨單、刪除交接留言。", cannot: "" },
+  { role: "purchaser", can: "管理品項（新增、編輯、停用、刪除）、處理採購需求、看進貨報表、盤點與記錄異動。", cannot: "不能管理員工、不能修改或刪除進貨單、不能刪除交接留言。" },
+  { role: "housekeeper", can: "盤點與記錄異動、提出採購需求、寫交接留言與標記已處理。", cannot: "不能新增或編輯品項、不能看進貨報表、不能管理員工。" },
+];
+
+export const COMMON_STAFF_ABILITIES = "所有人都可以：看庫存與異動紀錄、提出採購需求、寫交接留言並標記已處理。";
+
+// 姓名欄還是 Email（還沒設定姓名）的人，列表上要提醒管理員補上。
+export function hasPlaceholderName(member: Pick<StaffProfile, "displayName" | "email">): boolean {
+  const name = member.displayName.trim();
+  return name === "" || name.includes("@") || name.toLowerCase() === member.email.toLowerCase();
+}
+
+export function countActiveAdmins(staff: Array<Pick<StaffProfile, "role" | "active">>): number {
+  return staff.filter((m) => m.role === "admin" && m.active).length;
+}
+
+export type StaffStatusFilter = "active" | "inactive" | "all";
+
+export function filterStaff(staff: StaffProfile[], status: StaffStatusFilter, query: string): StaffProfile[] {
+  const q = query.trim().toLowerCase();
+  return staff.filter((m) =>
+    (status === "all" || (status === "active" ? m.active : !m.active)) &&
+    (!q || `${m.displayName} ${m.email}`.toLowerCase().includes(q)),
+  );
+}
+
+// 這個人現在還能不能被降級／停用？回傳 null 表示可以，否則回傳原因（畫面直接顯示）。
+// 資料庫另外有觸發器擋「最後一位管理員」，這裡只是讓畫面提早說清楚。
+export function adminChangeBlockedReason(member: Pick<StaffProfile, "id" | "role" | "active">, staff: Array<Pick<StaffProfile, "role" | "active">>, currentUserId: string | null): string | null {
+  if (member.role !== "admin" || !member.active) return null;
+  if (countActiveAdmins(staff) <= 1) return "這是唯一的管理員。要先指定另一位管理員，才能降級或停用。";
+  if (member.id === currentUserId) return "不能修改自己的管理員身分，請其他管理員幫你改。";
+  return null;
+}

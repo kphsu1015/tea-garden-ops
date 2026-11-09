@@ -20,7 +20,18 @@ export async function GET() {
       .select(STAFF_SELECT_COLUMNS)
       .order("created_at", { ascending: true });
     if (error) throw error;
-    return NextResponse.json({ staff: (data ?? []).map(mapStaffRow), demo: false });
+    // 已邀請但還沒完成設定密碼的人（只有管理員讀得到；其他角色不查）。
+    let invitations: Array<{ id: string; email: string; displayName: string | null; role: string; createdAt: string }> = [];
+    if (session.role === "admin") {
+      const { data: invites, error: inviteError } = await supabase
+        .from("staff_invitations")
+        .select("id,email,display_name,role,created_at")
+        .is("accepted_at", null)
+        .order("created_at", { ascending: false });
+      if (inviteError) throw inviteError;
+      invitations = (invites ?? []).map((i) => ({ id: i.id as string, email: i.email as string, displayName: (i.display_name as string | null) ?? null, role: i.role as string, createdAt: i.created_at as string }));
+    }
+    return NextResponse.json({ staff: (data ?? []).map(mapStaffRow), invitations, demo: false });
   } catch (error) {
     console.error("List staff failed", error);
     return NextResponse.json({ error: "讀取員工列表失敗，請稍後再試。" }, { status: 500 });

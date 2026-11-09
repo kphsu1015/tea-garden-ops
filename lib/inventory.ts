@@ -265,3 +265,47 @@ export function findSimilarInventoryItems(inventory: InventoryItem[], itemName: 
     .slice(0, limit)
     .map(({ item }) => item);
 }
+
+// 盤點送出的一筆：指定某一批改成實際數量，或新增一批（盤點時多找到、或復原時要補回已被扣光刪掉的批次）。
+export type StocktakeCount = { batchId: string; actual: number } | { expiryDate?: string; actual: number };
+
+// 復原盤點／異動：把「這一次」的變動反過來做，不是硬改回舊數字。
+// 每一批的目標＝現在的數量＋（改之前－改之後）；這樣復原前別人又做的領用、入庫都會保留。
+// 改之前有、現在已被扣光刪掉的批次，用原本的到期日補回這次扣掉的量。
+// 回傳 null 代表有某一批會變成負數（別人已經用掉了），不能自動復原；空陣列代表沒有變動、不需要復原。
+export function restoreCounts(before: InventoryItem, after: InventoryItem, current: InventoryItem): StocktakeCount[] | null {
+  const qty = (item: InventoryItem, id: string) => item.batches.find((b) => b.id === id)?.quantity ?? 0;
+  const counts: StocktakeCount[] = [];
+  const currentIds = new Set(current.batches.map((b) => b.id));
+  for (const b of current.batches) {
+    const delta = roundQuantity(qty(before, b.id) - qty(after, b.id));
+    if (delta === 0) continue;
+    const target = roundQuantity(b.quantity + delta);
+    if (target < 0) return null;
+    counts.push({ batchId: b.id, actual: target });
+  }
+  // 現在已經不存在的批次（改之前或改之後有）：要補回的量＝改之前－改之後；
+  // 是負數代表這次加進去的量已經被用完刪掉，不能自動復原。
+  const gone = [...before.batches, ...after.batches].filter((b, i, all) => !currentIds.has(b.id) && all.findIndex((x) => x.id === b.id) === i);
+  for (const b of gone) {
+    const delta = roundQuantity(qty(before, b.id) - qty(after, b.id));
+    if (delta < 0) return null;
+    if (delta > 0) counts.push({ expiryDate: b.expiryDate ?? undefined, actual: delta });
+  }
+  return counts;
+}
+
+// 兩個時間點的批次是否完全一樣（用來判斷復原前，這個品項有沒有被其他人改過）。
+export function sameBatches(a: InventoryItem, b: InventoryItem): boolean {
+  if (a.batches.length !== b.batches.length) return false;
+  const byId = new Map(a.batches.map((x) => [x.id, x.quantity]));
+  return b.batches.every((x) => byId.has(x.id) && roundQuantity(byId.get(x.id) ?? 0) === roundQuantity(x.quantity));
+}
+
+// 盤點差異太大要提醒再數一次（常見是單位搞錯，例如數成箱、系統記瓶）：
+// 差 3 以上，而且少了一半以上或變成兩倍以上。系統是 0 時不提醒（本來就沒東西，多找到很正常）。
+export function isLargeStockDiff(system: number, actual: number): boolean {
+  if (system <= 0) return false;
+  if (Math.abs(actual - system) < 3) return false;
+  return actual <= system / 2 || actual >= system * 2;
+}

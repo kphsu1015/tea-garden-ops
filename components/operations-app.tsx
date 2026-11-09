@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { initialNotes, initialPurchases } from "@/lib/demo-data";
-import { EXPIRY_WARNING_DAYS, estimatedRemainingLabel, expiryLabel, getExpiringBatches, getLowStockReason, lowStockReasonLabel, MOVEMENT_TYPE_DEFAULT_DIRECTION, MOVEMENT_TYPE_ENUM, periodFrequencyLabel, roundQuantity, taipeiDateKey, type ExpiringBatch } from "@/lib/inventory";
+import { EXPIRY_WARNING_DAYS, estimatedRemainingLabel, expiryLabel, getExpiringBatches, getLowStockReason, isLargeStockDiff, lowStockReasonLabel, MOVEMENT_TYPE_DEFAULT_DIRECTION, MOVEMENT_TYPE_ENUM, MOVEMENT_TYPE_LABELS, periodFrequencyLabel, restoreCounts, roundQuantity, taipeiDateKey, type ExpiringBatch, type StocktakeCount } from "@/lib/inventory";
 import type { StockMovementRecord } from "@/lib/movements";
 import { formatNumber, formatSignedNumber, formatTaipeiDateLabel, getTaipeiHour, greetingForHour } from "@/lib/format";
 import { generateId } from "@/lib/id";
@@ -177,13 +177,15 @@ function useCategories() {
   return { categories, loading, error, demo, addCategory, renameCategory, toggleCategoryActive, deleteCategory, reorderCategory, refresh };
 }
 
-type StocktakeCount = { batchId: string; actual: number } | { expiryDate?: string; actual: number };
-
 function useInventory() {
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [demo, setDemo] = useState(false);
+  // 最新一次讀到的庫存：存完盤點／異動後要馬上拿到新數字（做提示與復原），不用等畫面重新渲染。
+  const itemsRef = useRef<InventoryItem[]>([]);
+  // 最近一次重新讀取有沒有成功：失敗時 itemsRef 是舊資料，不能拿來做復原。
+  const freshRef = useRef(false);
 
   const refresh = async (silent = false) => {
     if (!silent) { setLoading(true); setError(""); }
@@ -191,10 +193,13 @@ function useInventory() {
       const response = await fetch("/api/inventory");
       const data = await response.json() as { items?: InventoryItem[]; demo?: boolean; error?: string };
       if (!response.ok) throw new Error(data.error || "讀取庫存失敗");
+      itemsRef.current = data.items || [];
+      freshRef.current = true;
       setItems(data.items || []);
       setDemo(Boolean(data.demo));
       setError("");
     } catch (reason) {
+      freshRef.current = false;
       if (!silent) setError(reason instanceof Error ? reason.message : "讀取庫存失敗，請稍後再試。");
     } finally {
       if (!silent) setLoading(false);
@@ -206,12 +211,13 @@ function useInventory() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  const mutate = async (request: () => Promise<Response>): Promise<string | void> => {
+  // 存完後安靜地重新讀取：不切到「載入中」，表格不會閃一下、整批盤點填到一半的內容也不會不見。
+  const mutate = async (request: () => Promise<Response>, reload = true): Promise<string | void> => {
     try {
       const response = await request();
       const data = await response.json() as { error?: string };
       if (!response.ok) return data.error || "操作失敗，請稍後再試。";
-      await refresh();
+      if (reload) await refresh(true);
     } catch (reason) {
       return reason instanceof Error ? reason.message : "操作失敗，請稍後再試。";
     }
@@ -255,11 +261,17 @@ function useInventory() {
   }));
 
   // 依批次盤點：一次送出每一批的實際數量，伺服器在同一個交易內修正。
-  const stocktake = (id: string, counts: StocktakeCount[], note?: string) => mutate(() => fetch(`/api/inventory/${id}/stocktake`, {
+  // reload=false 給整批盤點用：一項一項送完再統一重新讀取一次。
+  const stocktake = (id: string, counts: StocktakeCount[], note?: string, reload = true) => mutate(() => fetch(`/api/inventory/${id}/stocktake`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ counts, note }),
-  }));
+  }), reload);
 
-  return { items, loading, error, demo, addItem, updateItem, setItemActive, deleteItem, countStock, stocktake, refresh, createAndReturnItem };
+  const getItem = (id: string) => itemsRef.current.find((item) => item.id === id);
+  // 先重新讀一次再回傳最新品項；讀取失敗回傳 null。
+  const fetchItem = async (id: string) => { await refresh(true); return freshRef.current ? getItem(id) ?? null : null; };
+  const isFresh = () => freshRef.current;
+
+  return { items, loading, error, demo, addItem, updateItem, setItemActive, deleteItem, countStock, stocktake, refresh, createAndReturnItem, getItem, fetchItem, isFresh };
 }
 
 const navItems: Array<{ id: View; label: string; icon: typeof Box }> = [
@@ -313,6 +325,7 @@ export function OperationsApp() {
   const [deletingItem, setDeletingItem] = useState<InventoryItem | null>(null);
   const [countingItem, setCountingItem] = useState<InventoryItem | null>(null);
   const [movingItem, setMovingItem] = useState<InventoryItem | null>(null);
+  const [stockNotice, setStockNotice] = useState<StockNotice | null>(null);
   const [deletingNote, setDeletingNote] = useState<HandoverNote | null>(null);
   const [query, setQuery] = useState("");
   // 庫存頁的篩選：從總覽點「低庫存」「即將過期」進來時直接套用；從側邊選單進來回到「全部」。
@@ -452,6 +465,61 @@ export function OperationsApp() {
     try { await Promise.all([inventoryState.refresh(), ...(session.configured ? [purchasesState.refresh(), notesState.refresh()] : [])]); }
     finally { setRetrying(false); }
   };
+  // 盤點／異動存完：記下改之前和改之後，列表上方顯示改了多少，並且可以復原。
+  // 存之前先重新讀一次當作「改之前」，存完再讀一次當作「改之後」；任一次讀取失敗就只說已儲存、不給復原。
+  const STALE_NOTICE: StockNotice = { title: "已儲存，但重新讀取庫存失敗，請重新整理頁面確認數字。", changes: [], stale: true };
+  const recordStockChange = async (item: InventoryItem, title: string, run: () => Promise<string | void>) => {
+    const before = await inventoryState.fetchItem(item.id);
+    const err = await run();
+    if (err) return err;
+    const after = inventoryState.isFresh() ? inventoryState.getItem(item.id) : undefined;
+    setStockNotice(before && after ? { title, changes: [{ before, after }] } : STALE_NOTICE);
+  };
+  // 整批盤點：一項一項送（每項各自一個交易），送完統一重新讀取；回傳失敗的品項與原因，讓畫面留著讓員工改。
+  const bulkStocktake = async (entries: Array<{ item: InventoryItem; counts: StocktakeCount[] }>, note?: string) => {
+    const failed: Record<string, string> = {};
+    await inventoryState.refresh(true);
+    const startFresh = inventoryState.isFresh();
+    const befores: InventoryItem[] = [];
+    for (const { item, counts } of entries) {
+      const before = inventoryState.getItem(item.id) ?? item;
+      const err = await inventoryState.stocktake(item.id, counts, note, false);
+      if (err) failed[item.id] = err; else befores.push(before);
+    }
+    await inventoryState.refresh(true);
+    if (befores.length > 0) {
+      const changes = befores.flatMap((before) => { const after = inventoryState.getItem(before.id); return after ? [{ before, after }] : []; });
+      setStockNotice(startFresh && inventoryState.isFresh() ? { title: `已盤點 ${changes.length} 項`, changes } : STALE_NOTICE);
+    }
+    return failed;
+  };
+  // 復原：先讀最新數字，再把這一次的變動反過來做（見 restoreCounts），中間別人做的領用、入庫會保留。
+  // 別人已經把這次加的量用掉（會變負數）就不自動復原，請員工用盤點改。
+  const undoStockChange = async () => {
+    if (!stockNotice) return;
+    await inventoryState.refresh(true);
+    if (!inventoryState.isFresh()) { setStockNotice({ ...stockNotice, error: "讀不到最新庫存，請檢查網路後再試一次。", canRetry: true }); return; }
+    const failed: StockChange[] = [];
+    let firstError = "";
+    let conflict = false;
+    for (const change of stockNotice.changes) {
+      const current = inventoryState.getItem(change.after.id);
+      const counts = current ? restoreCounts(change.before, change.after, current) : null;
+      if (!current || counts === null) {
+        failed.push(change);
+        conflict = true;
+        firstError ||= `「${change.after.name}」之後又被用掉或刪除，沒辦法自動復原，請用「盤點」改成正確數量。`;
+        continue;
+      }
+      if (counts.length === 0) continue;
+      const err = await inventoryState.stocktake(current.id, counts, "復原上一次的修改", false);
+      if (err) { failed.push(change); firstError ||= err; }
+    }
+    await inventoryState.refresh(true);
+    setStockNotice(failed.length > 0
+      ? { ...stockNotice, changes: failed, error: firstError, canRetry: !conflict }
+      : { title: "已復原", changes: stockNotice.changes, undone: true });
+  };
   const openPurchaseModal = (initialItem?: string) => {
     // 沒有現有庫存品項也能開啟：現在「新增採購需求」本身就能順手建立新庫存品項，不用先跳去庫存頁新增。
     if (initialItem) setQuery(initialItem);
@@ -469,7 +537,7 @@ export function OperationsApp() {
   }
   if (!isLoggedIn) return <LoginScreen supabaseConfigured={session.configured} onDemoLogin={() => setDemoLoggedIn(true)} unauthorized={rejected} />;
 
-  const openView = (next: View) => { setView(next); setMobileNav(false); if (next === "inventory") setInventoryFilter("all"); };
+  const openView = (next: View) => { setView(next); setMobileNav(false); setStockNotice(null); if (next === "inventory") setInventoryFilter("all"); };
   // 從總覽點卡片進來：清掉之前的搜尋字，不然結果會跟卡片上的數字對不上。
   const openInventory = (filter: StockFilter) => { setView("inventory"); setMobileNav(false); setInventoryFilter(filter); setQuery(""); };
   const handleLogout = () => { if (session.configured) session.signOut(); else setDemoLoggedIn(false); };
@@ -533,6 +601,10 @@ export function OperationsApp() {
             onCountItem={(item) => setCountingItem(item)}
             onAddMovement={(item) => setMovingItem(item)}
             onPurchase={openPurchaseModal}
+            stockNotice={stockNotice}
+            onUndoStock={undoStockChange}
+            onDismissStock={() => setStockNotice(null)}
+            onBulkStocktake={bulkStocktake}
           />}
           {view === "purchases" && <PurchasesView requests={purchases} loading={session.configured && purchasesState.loading} loadError={session.configured ? purchasesState.error : ""} canAdvance={role === "admin" || role === "purchaser" || !session.configured} onAdvance={advancePurchase} onSetPriority={setPurchasePriority} onEdit={editPurchase} onNew={() => openPurchaseModal()} onGoReceipts={() => openView("receipts")} />}
           {view === "receipts" && <ReceiptScanner inventory={activeInventory} categories={activeCategoryNames} receipts={receipts} retentionDays={retentionDays} onConfirm={async (record) => {
@@ -584,12 +656,13 @@ export function OperationsApp() {
       {countingItem && <StockCountModal
         item={countingItem}
         onClose={() => setCountingItem(null)}
-        onConfirm={(counts, note) => inventoryState.stocktake(countingItem.id, counts, note)}
+        onConfirm={(counts, note) => recordStockChange(countingItem, "已盤點", () => inventoryState.stocktake(countingItem.id, counts, note))}
       />}
       {movingItem && <MovementEntryModal
         item={movingItem}
         onClose={() => setMovingItem(null)}
-        onConfirm={(movementType, changeAmount, note, batch) => inventoryState.countStock(movingItem.id, changeAmount, note, movementType, batch)}
+        onConfirm={(movementType, changeAmount, note, batch) => recordStockChange(movingItem, `已記錄${MOVEMENT_TYPE_LABELS[movementType] ?? "異動"}`, () => inventoryState.countStock(movingItem.id, changeAmount, note, movementType, batch))}
+        onGoReceipts={() => { setMovingItem(null); openView("receipts"); }}
       />}
       {deletingNote && <ConfirmDeleteNoteModal
         note={deletingNote}
@@ -924,7 +997,34 @@ function PageHeader({ title, subtitle, button, onClick }: { title: string; subti
 type StockFilter = "all" | "low" | "expiring";
 const STOCK_FILTERS: Array<{ id: StockFilter; label: string }> = [{ id: "all", label: "全部" }, { id: "low", label: "低庫存" }, { id: "expiring", label: "快到期" }];
 
-function InventoryView({ items, filter, setFilter, loading, error, demo, categories, query, setQuery, canManage, canReactivateOrDelete, canCount, onAddItem, onEditItem, onToggleActive, onDeleteItem, onCountItem, onAddMovement, onPurchase }: {
+// 盤點／異動存完後的提示：before／after 是存之前與存之後的品項，用來顯示改了多少、以及復原。
+type StockChange = { before: InventoryItem; after: InventoryItem };
+type StockNotice = { title: string; changes: StockChange[]; error?: string; canRetry?: boolean; undone?: boolean; stale?: boolean };
+
+function describeStockChange({ before, after }: StockChange, undone = false): string {
+  const from = undone ? after.quantity : before.quantity;
+  const to = undone ? before.quantity : after.quantity;
+  return `「${after.name}」${formatNumber(from)} → ${formatNumber(to)} ${after.unit}（${formatSignedNumber(roundQuantity(to - from))}）`;
+}
+
+function StockChangeNotice({ notice, canUndo, onUndo, onDismiss }: { notice: StockNotice; canUndo: boolean; onUndo: () => Promise<void>; onDismiss: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const shown = notice.changes.slice(0, 3).map((c) => describeStockChange(c, notice.undone)).join("、");
+  const more = notice.changes.length > 3 ? `，還有 ${notice.changes.length - 3} 項` : "";
+  const text = notice.error
+    ? `復原失敗：${notice.error}`
+    : notice.stale ? notice.title
+    : `${notice.title}${notice.changes.length > 1 ? "：" : " "}${shown}${more}`;
+  const undo = async () => { setBusy(true); try { await onUndo(); } finally { setBusy(false); } };
+  const showUndo = canUndo && !notice.undone && !notice.stale && (!notice.error || notice.canRetry);
+  return <div className={notice.error || notice.stale ? "error-box inventory-notice" : "inventory-notice"} role={notice.error || notice.stale ? "alert" : "status"}>
+    <span>{text}</span>
+    {showUndo && <button type="button" className="text-button" onClick={undo} disabled={busy}><Undo2 size={14} />{busy ? "復原中…" : notice.error ? "再試一次" : "復原"}</button>}
+    <button type="button" className="notice-close" aria-label="關閉提示" title="關閉提示" onClick={onDismiss}><X size={14} /></button>
+  </div>;
+}
+
+function InventoryView({ items, filter, setFilter, loading, error, demo, categories, query, setQuery, canManage, canReactivateOrDelete, canCount, onAddItem, onEditItem, onToggleActive, onDeleteItem, onCountItem, onAddMovement, onPurchase, stockNotice, onUndoStock, onDismissStock, onBulkStocktake }: {
   items: InventoryItem[];
   filter: StockFilter;
   setFilter: (f: StockFilter) => void;
@@ -944,8 +1044,13 @@ function InventoryView({ items, filter, setFilter, loading, error, demo, categor
   onCountItem: (item: InventoryItem) => void;
   onAddMovement: (item: InventoryItem) => void;
   onPurchase: (name: string) => void;
+  stockNotice: StockNotice | null;
+  onUndoStock: () => Promise<void>;
+  onDismissStock: () => void;
+  onBulkStocktake: (entries: Array<{ item: InventoryItem; counts: StocktakeCount[] }>, note?: string) => Promise<Record<string, string>>;
 }) {
   const [category, setCategory] = useState("全部");
+  const [bulk, setBulk] = useState(false);
   // 停用／啟用後的提示：停用的品項會從清單消失（預設不顯示停用品項），要讓員工知道發生什麼事，也可以馬上復原。
   const [toggleNotice, setToggleNotice] = useState<{ item: InventoryItem; nowActive: boolean; error?: string; undoFailed?: boolean } | null>(null);
   // 只採用最後一次操作的結果：連續停用／復原時，晚回來的舊結果不會蓋掉新的提示。
@@ -988,7 +1093,13 @@ function InventoryView({ items, filter, setFilter, loading, error, demo, categor
     : filter === "low" && narrowing.length === 1 ? "目前沒有低庫存的品項"
     : filter === "expiring" && narrowing.length === 1 ? `${EXPIRY_WINDOW_LABEL}內沒有快到期的批次`
     : "找不到符合的品項";
-  return <><div className="section-header"><div><h1>庫存管理</h1><p>掌握各區備品與食材數量，低於安全庫存或預估用量不足時立即提醒。</p></div><div className="header-actions"><button className="primary-button" onClick={onAddItem} disabled={!canManage}><Plus size={18} />新增品項</button></div></div>
+  const bulkItems = filtered.filter((item) => item.active);
+  return <><div className="section-header"><div><h1>{bulk ? "整批盤點" : "庫存管理"}</h1><p>{bulk ? "數完實際數量直接填進來，跟系統一樣的可以留空。可以用上面的分類、搜尋縮小範圍，一次盤一區。" : "掌握各區備品與食材數量，低於安全庫存或預估用量不足時立即提醒。"}</p></div>
+      {!bulk && <div className="header-actions">
+        <button type="button" className="secondary-button" onClick={() => { setBulk(true); onDismissStock(); }} disabled={!canCount || demo} title={canCount ? "一次輸入多個品項的實際數量" : "你的帳號沒有盤點權限"}><ClipboardCheck size={17} />整批盤點</button>
+        <button className="primary-button" onClick={onAddItem} disabled={!canManage}><Plus size={18} />新增品項</button>
+      </div>}
+    </div>
     {demo && <div className="warning-box"><span>• 尚未設定Supabase，目前僅顯示唯讀示範庫存，無法新增／編輯／停用／刪除／盤點。</span></div>}
     {error && <div className="error-box">{error}</div>}
     {toggleNotice && <div className={toggleNotice.error ? "error-box inventory-notice" : "inventory-notice"} role={toggleNotice.error ? "alert" : "status"}>
@@ -996,13 +1107,15 @@ function InventoryView({ items, filter, setFilter, loading, error, demo, categor
       {canUndo && <button type="button" className="text-button" onClick={undoToggle}><Undo2 size={14} />{toggleNotice.undoFailed ? "再試一次" : "復原"}</button>}
       <button type="button" className="notice-close" aria-label="關閉提示" title="關閉提示" onClick={() => setToggleNotice(null)}><X size={14} /></button>
     </div>}
+    {stockNotice && <StockChangeNotice notice={stockNotice} canUndo={canCount} onUndo={onUndoStock} onDismiss={onDismissStock} />}
     <div className="toolbar">
       <div className="stock-filter" role="group" aria-label="篩選庫存">{STOCK_FILTERS.map((f) => <button key={f.id} type="button" aria-pressed={filter === f.id} className={filter === f.id ? "active" : ""} onClick={() => setFilter(f.id)}>{f.label}<span>{counts[f.id]}</span></button>)}</div>
       <div className="search-box"><Search size={18} /><input placeholder="搜尋品項或供應商" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="搜尋品項或供應商" /></div>
       <select value={category} onChange={(e) => setCategory(e.target.value)} aria-label="分類"><option>全部</option>{categories.map((name) => <option key={name}>{name}</option>)}</select>
-      <label className="check-label inline-check"><input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />顯示停用品項</label>
+      {!bulk && <label className="check-label inline-check"><input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />顯示停用品項</label>}
     </div>
-    {loading ? <p>載入庫存中…</p> : <div className="table-card"><table className="inventory-table"><thead><tr><th>品項</th><th>分類</th><th>目前庫存</th><th>預估使用</th><th>有效期限</th><th>狀態</th><th>操作</th></tr></thead><tbody>
+    {bulk ? <BulkStocktake items={bulkItems} allItems={items.filter((item) => item.active)} narrowing={narrowing} onClearFilters={clearFilters} onSubmit={onBulkStocktake} onExit={() => setBulk(false)} />
+    : loading ? <p>載入庫存中…</p> : <div className="table-card"><table className="inventory-table"><thead><tr><th>品項</th><th>分類</th><th>目前庫存</th><th>預估使用</th><th>有效期限</th><th>狀態</th><th>操作</th></tr></thead><tbody>
       {filtered.length === 0 && <tr className="inventory-empty"><td colSpan={7}>
         <strong>{emptyTitle}</strong>
         {items.length === 0
@@ -1021,8 +1134,8 @@ function InventoryView({ items, filter, setFilter, loading, error, demo, categor
           <td data-label="狀態">{!item.active ? <Pill tone="red">已停用</Pill> : reason ? <div className="status-cell"><Pill tone="red">低庫存</Pill><small className="danger-text">{lowStockReasonLabel(reason)}</small></div> : expiringIds.has(item.id) ? <Pill tone="gold">快到期</Pill> : <Pill>充足</Pill>}</td>
           <td data-label="操作"><div className="row-actions">
             {item.active && <button type="button" className="row-text-button" onClick={() => onPurchase(item.name)}><ShoppingCart size={14} />採購</button>}
-            <button type="button" className="row-text-button" disabled={!canCount} onClick={() => onCountItem(item)} title={canCount ? undefined : "你的帳號沒有盤點權限"}><ClipboardCheck size={14} />盤點</button>
-            <button type="button" className="row-text-button" disabled={!canCount} onClick={() => onAddMovement(item)} title={canCount ? undefined : "你的帳號沒有新增異動的權限"}><ClipboardList size={14} />異動</button>
+            <button type="button" className="row-text-button" disabled={!canCount} onClick={() => onCountItem(item)} title={canCount ? "數完實際數量，改成正確的數字" : "你的帳號沒有盤點權限"}><ClipboardCheck size={14} />盤點</button>
+            <button type="button" className="row-text-button" disabled={!canCount} onClick={() => onAddMovement(item)} title={canCount ? "記一筆用掉、補房、損壞或報廢" : "你的帳號沒有新增異動的權限"}><ClipboardList size={14} />異動</button>
             <RowMenu item={item} canManage={canManage} canReactivateOrDelete={canReactivateOrDelete} onEdit={() => onEditItem(item)} onToggle={() => toggleActive(item)} onDelete={() => onDeleteItem(item)} />
           </div></td>
         </tr>;
@@ -1096,6 +1209,111 @@ function BatchExpiryList({ item, todayKey }: { item: InventoryItem; todayKey: st
   if (item.batches.length === 0 || (item.batches.length === 1 && item.batches[0].expiryDate === null)) return <>—</>;
   const soonKeys = new Set(getExpiringBatches([item], todayKey).map((entry) => entry.batch.id));
   return <div className="batch-expiry-list">{item.batches.map((batch) => <small key={batch.id} className={soonKeys.has(batch.id) ? "danger-text" : ""}>{batch.expiryDate ?? "未標日期"} · {formatNumber(batch.quantity)}{item.unit}</small>)}</div>;
+}
+
+// 整批盤點：列出目前篩選到的品項，每一批一個輸入框（沒有庫存的品項一個框）。留空＝跟系統一樣。
+// 填的內容以「品項:批次」記住，切換分類、搜尋時不會不見；按 Enter 跳到下一格。
+const NEW_BATCH_KEY = "new";
+function BulkStocktake({ items, allItems, narrowing, onClearFilters, onSubmit, onExit }: {
+  items: InventoryItem[];
+  allItems: InventoryItem[];
+  narrowing: string[];
+  onClearFilters: () => void;
+  onSubmit: (entries: Array<{ item: InventoryItem; counts: StocktakeCount[] }>, note?: string) => Promise<Record<string, string>>;
+  onExit: () => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [failed, setFailed] = useState<Record<string, string>>({});
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [confirmExit, setConfirmExit] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const key = (itemId: string, batchId: string) => `${itemId}:${batchId}`;
+  const parse = (raw: string | undefined): number | null | "invalid" => {
+    if (raw === undefined || raw.trim() === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? roundQuantity(n) : "invalid";
+  };
+  // 每個品項算出要送的盤點內容、盤點後總數、有沒有填錯。
+  const plan = (item: InventoryItem) => {
+    let invalid = false;
+    let total = 0;
+    const counts: StocktakeCount[] = [];
+    if (item.batches.length === 0) {
+      const v = parse(values[key(item.id, NEW_BATCH_KEY)]);
+      if (v === "invalid") invalid = true;
+      else if (v !== null && v > 0) { counts.push({ actual: v }); total = v; }
+    } else {
+      for (const b of item.batches) {
+        const v = parse(values[key(item.id, b.id)]);
+        if (v === "invalid") { invalid = true; total += b.quantity; continue; }
+        if (v !== null && v !== b.quantity) counts.push({ batchId: b.id, actual: v });
+        total += v ?? b.quantity;
+      }
+    }
+    return { counts, total: roundQuantity(total), invalid };
+  };
+  // 用全部啟用中的品項來算：先填了客房、再切到廚房填，送出時兩邊都會送，不會因為篩選掉就漏掉。
+  const plans = new Map(allItems.map((item) => [item.id, plan(item)]));
+  const changed = allItems.filter((item) => (plans.get(item.id)?.counts.length ?? 0) > 0);
+  const invalidCount = allItems.filter((item) => plans.get(item.id)?.invalid).length;
+  const shownIds = new Set(items.map((item) => item.id));
+  const hiddenChanged = changed.filter((item) => !shownIds.has(item.id)).length;
+  const touched = Object.values(values).some((v) => v.trim() !== "");
+
+  const setValue = (k: string, v: string) => { setValues((prev) => ({ ...prev, [k]: v })); setConfirmExit(false); };
+  const focusNext = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const inputs = Array.from(listRef.current?.querySelectorAll<HTMLInputElement>("input[data-bulk]") ?? []);
+    const next = inputs[inputs.indexOf(e.currentTarget) + 1];
+    if (next) { next.focus(); next.select(); }
+  };
+  const submit = async () => {
+    if (changed.length === 0 || invalidCount > 0) return;
+    setSubmitting(true);
+    const result = await onSubmit(changed.map((item) => ({ item, counts: plans.get(item.id)!.counts })), note.trim() || undefined);
+    setSubmitting(false);
+    setFailed(result);
+    // 成功的品項清掉填的數字（數字已經變成新的系統數量）；失敗的留著讓員工改。
+    setValues((prev) => Object.fromEntries(Object.entries(prev).filter(([k]) => result[k.split(":")[0]])));
+    if (Object.keys(result).length === 0) { setNote(""); onExit(); }
+  };
+  const exit = () => { if (touched && !confirmExit) { setConfirmExit(true); return; } onExit(); };
+
+  return <div className="bulk-count">
+    {items.length === 0 ? <div className="table-card bulk-empty"><strong>沒有符合的品項</strong>{narrowing.length > 0 && <span>目前條件：{narrowing.join("、")}<button type="button" className="text-button" onClick={onClearFilters}>清除篩選，顯示全部</button></span>}</div>
+    : <div className="table-card bulk-list" ref={listRef}>
+      {items.map((item) => {
+        const p = plans.get(item.id) ?? plan(item);
+        const large = !p.invalid && p.counts.length > 0 && isLargeStockDiff(item.quantity, p.total);
+        const diff = roundQuantity(p.total - item.quantity);
+        const rows = item.batches.length === 0 ? [{ id: NEW_BATCH_KEY, label: "目前沒有庫存", system: 0 }] : item.batches.map((b) => ({ id: b.id, label: b.expiryDate ? `${b.expiryDate} 到期` : item.batches.length > 1 ? "未標日期" : "目前庫存", system: b.quantity }));
+        return <section key={item.id} className={`bulk-item${p.counts.length > 0 ? " bulk-item-changed" : ""}`}>
+          <header><strong>{item.name}</strong><small>{item.category}</small>
+            {p.counts.length > 0 && <b className={diff < 0 ? "danger-text" : diff > 0 ? "positive-text" : ""}>{formatNumber(item.quantity)} → {formatNumber(p.total)} {item.unit}（{formatSignedNumber(diff)}）</b>}
+          </header>
+          {rows.map((row) => { const v = values[key(item.id, row.id)] ?? ""; const bad = parse(v) === "invalid"; return <label key={row.id} className="bulk-batch">
+            <span>{row.label}<small>系統 {formatNumber(row.system)} {item.unit}</small></span>
+            <input data-bulk type="number" inputMode="decimal" min="0" step="0.5" placeholder={formatNumber(row.system)} value={v} disabled={submitting} aria-invalid={bad} aria-label={`${item.name} ${row.label} 實際數量（${item.unit}）`} onChange={(e) => setValue(key(item.id, row.id), e.target.value)} onKeyDown={focusNext} />
+            <em>{item.unit}</em>
+          </label>; })}
+          {p.invalid && <small className="danger-text">數量要是 0 以上的數字（最小 0.5）。</small>}
+          {large && <small className="bulk-warn">跟系統差很多，請再數一次，或確認單位是不是「{item.unit}」。</small>}
+          {failed[item.id] && <small className="danger-text" role="alert">沒有存到：{failed[item.id]}</small>}
+        </section>;
+      })}
+    </div>}
+    <footer className="bulk-footer">
+      <label className="bulk-note">備註（可不填）<input value={note} disabled={submitting} onChange={(e) => setNote(e.target.value)} placeholder="例如：11 月月底盤點" /></label>
+      <div className="bulk-footer-actions">
+        <span className="bulk-summary">{invalidCount > 0 ? <span className="danger-text">{invalidCount} 項數量填錯</span> : changed.length > 0 ? `${changed.length} 項跟系統不一樣${hiddenChanged > 0 ? `（${hiddenChanged} 項不在目前清單）` : ""}` : "還沒有跟系統不一樣的數量"}</span>
+        <button type="button" className={confirmExit ? "secondary-button danger-outline" : "secondary-button"} onClick={exit} disabled={submitting}>{confirmExit ? "確定放棄填的數字？" : "取消"}</button>
+        <button type="button" className="primary-button" onClick={submit} disabled={submitting || changed.length === 0 || invalidCount > 0}>{submitting ? "儲存中…" : changed.length > 0 ? `送出盤點（${changed.length} 項）` : "送出盤點"}</button>
+      </div>
+    </footer>
+  </div>;
 }
 
 // 看板上每一欄的「推進」按鈕寫清楚會變成什麼；已到貨的下一步是去建立進貨單（實際入庫）。
@@ -1433,12 +1651,17 @@ function batchLabel(batch: InventoryBatch, unit: string): string {
 
 const AUTO_BATCH = "";
 
-function MovementEntryModal({ item, onClose, onConfirm }: {
+// 異動類型的選單順序：最常用的「用掉」放前面，採購入庫放最後（一般進貨走進貨單）。
+const MOVEMENT_TYPE_ORDER: MovementType[] = ["日常領用", "客房補充", "食材使用", "損壞", "過期報廢", "盤點調整", "採購入庫"];
+
+function MovementEntryModal({ item, onClose, onConfirm, onGoReceipts }: {
   item: InventoryItem;
   onClose: () => void;
   onConfirm: (movementType: string, changeAmount: number, note?: string, batch?: { batchId?: string; expiryDate?: string }) => Promise<string | void>;
+  onGoReceipts: () => void;
 }) {
-  const [type, setType] = useState<MovementType>("採購入庫");
+  // 預設「日常領用」：以前預設採購入庫，員工容易在這裡入庫一次、進貨單又入庫一次。
+  const [type, setType] = useState<MovementType>("日常領用");
   const [direction, setDirection] = useState<"increase" | "decrease">("increase");
   const [amount, setAmount] = useState(1);
   const [expiryDate, setExpiryDate] = useState("");
@@ -1471,8 +1694,10 @@ function MovementEntryModal({ item, onClose, onConfirm }: {
   };
 
   return <ModalShell title="新增庫存異動" subtitle={`品項：${item.name}`} onClose={onClose}><form onSubmit={submit}>
+    <p className="modal-lead">記一筆用掉、補房、損壞或報廢。如果是數完要改成正確數字，請改用「盤點」。</p>
     <div className="stock-hint">目前庫存：{formatNumber(item.quantity)} {item.unit}</div>
-    <label>異動類型<select value={type} onChange={(e) => { setType(e.target.value as MovementType); setBatchId(AUTO_BATCH); }}>{MOVEMENT_TYPES.map((t) => <option key={t}>{t}</option>)}</select></label>
+    <label>異動類型<select value={type} onChange={(e) => { setType(e.target.value as MovementType); setBatchId(AUTO_BATCH); }}>{MOVEMENT_TYPE_ORDER.filter((t) => MOVEMENT_TYPES.includes(t)).map((t) => <option key={t}>{t}</option>)}</select></label>
+    {type === "採購入庫" && <div className="warning-box"><span>有進貨單的請用「新增進貨單」入庫，這裡只補登沒有單據的進貨，不然同一批會入庫兩次。</span><button type="button" className="text-button" onClick={onGoReceipts}>去新增進貨單<ChevronRight size={14} /></button></div>}
     <div className="form-grid">
       <label>方向<select value={effectiveDirection} disabled={Boolean(fixedDirection)} onChange={(e) => setDirection(e.target.value as "increase" | "decrease")}><option value="increase">增加</option><option value="decrease">減少</option></select></label>
       <label>數量（{item.unit}）<input type="number" min="0.5" step="0.5" value={amount} onChange={(e) => setAmount(roundQuantity(Number(e.target.value)))} /></label>
@@ -1611,6 +1836,7 @@ function StockCountModal({ item, onClose, onConfirm }: { item: InventoryItem; on
   };
 
   return <ModalShell title="盤點／修正庫存" subtitle={`品項：${item.name}`} onClose={onClose}><form onSubmit={submit}>
+    <p className="modal-lead">數完實際數量填進來，系統會自動算出差多少。東西用掉或報廢請改用「異動」。</p>
     <div className="stock-hint">系統目前數量：{formatNumber(item.quantity)} {item.unit}{item.batches.length > 1 ? `（${item.batches.length}批）` : ""}</div>
     {item.batches.map((b) => <label key={b.id}>{b.expiryDate ? `${b.expiryDate} 到期` : "未標日期"}：系統 {formatNumber(b.quantity)}{item.unit}，實際
       <input type="number" min="0" step="0.5" value={actuals[b.id] ?? b.quantity} onChange={(e) => setActuals({ ...actuals, [b.id]: Math.max(0, roundQuantity(Number(e.target.value))) })} />
@@ -1621,6 +1847,7 @@ function StockCountModal({ item, onClose, onConfirm }: { item: InventoryItem; on
     </div>)}
     <button type="button" className="text-button" onClick={() => setExtraRows([...extraRows, { id: generateId(), expiryDate: "", actual: 1 }])}><Plus size={15} />{item.batches.length === 0 ? "新增庫存（含有效期限）" : "新增一個日期（盤點時多找到的）"}</button>
     {counts.length === 0 ? <div className="setting-note">庫存數量一致，不需要建立異動紀錄。</div> : <div className={`stock-hint ${diff > 0 ? "positive-text" : diff < 0 ? "danger-text" : ""}`}>盤點後總數：{formatNumber(newTotal)} {item.unit}（差異 {formatSignedNumber(diff)}）</div>}
+    {counts.length > 0 && isLargeStockDiff(item.quantity, newTotal) && <div className="warning-box"><span>跟系統差很多，請再數一次，或確認數的單位是不是「{item.unit}」。確定沒錯可以直接送出。</span></div>}
     <label>修正原因或備註（可不填）<textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：季度盤點、破損報廢" /></label>
     {error && <div className="error-box">{error}</div>}
     <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={counts.length === 0 || submitting}>{submitting ? "儲存中…" : "確認修正庫存"}</button></div>

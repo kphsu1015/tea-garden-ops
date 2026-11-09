@@ -342,3 +342,49 @@ td .row-menu-list button small { display:inline;margin-top:0; }
   .movement-table td[data-label="品項"]::before { display:none; }
   .movement-table td[data-label="品項"] strong { font-size:15px; }
 }
+
+/* 進貨報表頁 */
+.report-body.is-refreshing { opacity:.6;transition:opacity .15s; }
+.report-month-title { margin:0 0 12px;font-size:19px;display:flex;align-items:baseline;gap:10px; }
+.report-month-title small { color:var(--muted);font-size:12px;font-weight:400; }
+.report-month-picker .secondary-button { padding:9px 14px;font-size:13px;white-space:nowrap; }
+.report-help-list { margin:10px 0 0;padding-left:20px;display:grid;gap:4px;line-height:1.6; }
+.report-incomplete { display:flex;align-items:center;gap:12px;margin:0 0 14px; }
+.report-incomplete>span { flex:1; }
+.report-summary-card.is-primary { grid-column:span 2; }
+.report-summary-card.is-primary strong { font-size:28px; }
+.report-summary-card span { display:flex;align-items:center;gap:4px; }
+.report-detail-header { margin-top:8px; }
+.report-detail-header p { margin:4px 0 0; }
+.report-toolbar { flex-wrap:wrap;align-items:center; }
+.report-toolbar>select { width:170px; }
+.report-toolbar .search-box { flex:1 1 200px;max-width:280px; }
+.sort-button { border:0;background:none;padding:0;font:inherit;font-weight:inherit;color:inherit;cursor:pointer;white-space:nowrap; }
+.sort-button:hover { color:var(--forest);text-decoration:underline;text-underline-offset:3px; }
+.sort-button:focus-visible { outline:2px solid var(--gold);outline-offset:2px; }
+.row-text-button.danger-text-button { color:#9b4836; }
+@media(max-width:760px){
+  .report-summary-card.is-primary { grid-column:1/-1; }
+  .report-toolbar>select,.report-toolbar .search-box { width:100%;max-width:none; }
+  .report-incomplete { flex-wrap:wrap; }
+  .report-lines-table { min-width:0; }
+  .report-lines-table thead { display:none; }
+  .report-lines-table,.report-lines-table tbody,.report-lines-table td { display:block; }
+  .report-lines-table tr { display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;padding:12px 15px;border-bottom:1px solid #eee9df; }
+  .report-lines-table td { padding:0;border:0; }
+  .report-lines-table td::before { content:attr(data-label);display:block;color:#5b6a65;font-size:11px;margin-bottom:3px; }
+  .report-lines-table td[data-label="品項名稱"],.report-lines-table td[data-label="單據操作"] { grid-column:1/-1; }
+  .report-lines-table td[data-label="品項名稱"]::before,.report-lines-table td[data-label="單據操作"]::before { display:none; }
+  .report-lines-table td[data-label="品項名稱"] strong { font-size:15px; }
+  .report-lines-table td[data-label="單據操作"]:empty { display:none; }
+  .report-lines-table .row-actions { gap:6px; }
+  .report-lines-table .row-actions .row-text-button { flex:1;height:38px;justify-content:center; }
+}
+.report-deleted { margin-top:20px; }
+.report-deleted-list { list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px; }
+.report-deleted-list li { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;background:#fff;border:1px solid var(--line);border-radius:10px; }
+.report-deleted-list li>span { display:grid;gap:2px;min-width:0; }
+.report-deleted-list small { color:#5b6a65;font-size:12px; }
+/* 摘要卡：總額佔 2 格＋其他 6 張，寬螢幕剛好排成 2 列 4 欄，不留孤兒卡片 */
+@media(min-width:1051px){ .report-summary-grid { grid-template-columns:repeat(4,1fr); } }
+@media(max-width:1050px){ .report-summary-grid { grid-template-columns:repeat(2,1fr); } }

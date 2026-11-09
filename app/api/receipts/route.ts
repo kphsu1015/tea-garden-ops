@@ -18,6 +18,7 @@ export async function GET() {
     const { data, error } = await supabase
       .from("receipts")
       .select(RECEIPT_SELECT_COLUMNS)
+      .neq("status", "deleted")
       .order("created_at", { ascending: false })
       .limit(50);
     if (error) throw error;

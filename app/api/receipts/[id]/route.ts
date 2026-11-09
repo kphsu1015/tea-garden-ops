@@ -21,9 +21,35 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   const { id } = await params;
   try {
     const body = await request.json() as {
+      action?: "restore";
       totalAmount?: number | null;
       lines?: Array<{ id: string; unitPrice?: number | null; totalPrice?: number | null }>;
     };
+
+    // 復原被刪除的進貨單：僅admin。
+    if (body.action === "restore") {
+      if (session.role !== "admin") return NextResponse.json({ error: "只有管理員可以復原已刪除的進貨單。" }, { status: 403 });
+      const { data: restored, error } = await supabase
+        .from("receipts")
+        .update({ status: "stocked", deleted_at: null })
+        .eq("id", id)
+        .eq("status", "deleted")
+        .select("id");
+      if (error) {
+        if (error.code === "42501") return NextResponse.json({ error: "只有管理員可以復原已刪除的進貨單。" }, { status: 403 });
+        throw error;
+      }
+      if (!restored || restored.length === 0) return NextResponse.json({ error: "這張進貨單不需要復原。" }, { status: 404 });
+      return NextResponse.json({ ok: true });
+    }
+
+    // 只有已入庫的進貨單可以改金額；已刪除的要先復原。
+    {
+      const { data: current, error: currentError } = await supabase.from("receipts").select("status").eq("id", id).maybeSingle();
+      if (currentError) throw currentError;
+      if (!current) return NextResponse.json({ error: "找不到這張進貨單。" }, { status: 404 });
+      if (current.status !== "stocked") return NextResponse.json({ error: "這張進貨單已被刪除，請先復原再修改金額。" }, { status: 409 });
+    }
 
     if (typeof body.totalAmount === "number" && body.totalAmount < 0) {
       return NextResponse.json({ error: "單據總額不可為負數。" }, { status: 400 });
@@ -36,7 +62,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     }
 
     if (typeof body.totalAmount !== "undefined") {
-      const { data, error } = await supabase.from("receipts").update({ total_amount: body.totalAmount }).eq("id", id).select("id");
+      const { data, error } = await supabase.from("receipts").update({ total_amount: body.totalAmount }).eq("id", id).eq("status", "stocked").select("id");
       if (error) {
         if (error.code === "P0001") return NextResponse.json({ error: AMOUNT_FORBIDDEN_MESSAGE }, { status: 403 });
         if (error.code === "23514") return NextResponse.json({ error: "單據總額不可為負數。" }, { status: 400 });
@@ -69,19 +95,29 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   }
 }
 
-// 刪除／取消已入庫進貨單：僅admin。receipt_lines因為on delete cascade會一併移除。
+// 刪除已入庫進貨單：僅admin。軟刪除（status改成deleted、記錄deleted_at），報表不再計入，
+// 可以用PATCH { action: "restore" } 復原。庫存數量不會退回（入庫當時已寫進庫存與異動紀錄）。
 export async function DELETE(_request: Request, { params }: RouteContext) {
   const supabase = await createClient();
   if (!supabase) return NextResponse.json({ error: "尚未設定Supabase，無法刪除進貨單。" }, { status: 503 });
 
   const session = await requireStaffSession(supabase);
   if (!session.ok) return session.response;
+  if (session.role !== "admin") return NextResponse.json({ error: DELETE_FORBIDDEN_MESSAGE }, { status: 403 });
 
   const { id } = await params;
   try {
-    const { data: deleted, error } = await supabase.from("receipts").delete().eq("id", id).select("id");
-    if (error) throw error;
-    if (!deleted || deleted.length === 0) return NextResponse.json({ error: DELETE_FORBIDDEN_MESSAGE }, { status: 403 });
+    const { data: deleted, error } = await supabase
+      .from("receipts")
+      .update({ status: "deleted", deleted_at: new Date().toISOString() })
+      .eq("id", id)
+      .eq("status", "stocked")
+      .select("id");
+    if (error) {
+      if (error.code === "42501") return NextResponse.json({ error: DELETE_FORBIDDEN_MESSAGE }, { status: 403 });
+      throw error;
+    }
+    if (!deleted || deleted.length === 0) return NextResponse.json({ error: "找不到這張已入庫的進貨單，可能已經被刪除。" }, { status: 404 });
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Delete receipt failed", error);

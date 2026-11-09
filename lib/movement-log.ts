@@ -1,3 +1,4 @@
+import { toCsv } from "@/lib/csv";
 import type { StockMovementRecord } from "@/lib/movements";
 
 // 異動紀錄頁用的純函式（日期分組、日期範圍、推算庫存、匯出 CSV），一律以 Asia/Taipei 為準。
@@ -100,16 +101,9 @@ export function balancesAfter(rows: StockMovementRecord[], currentQuantity: numb
   return result;
 }
 
-function csvCell(value: string | number | null): string {
-  const text = value === null ? "" : String(value);
-  // 以 = + - @ 開頭的文字，Excel 會當成公式執行，前面補一個單引號擋掉。
-  const safe = /^[=+\-@\t\r]/.test(text) && typeof value === "string" ? `'${text}` : text;
-  return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
-}
-
 export function movementsToCsv(rows: StockMovementRecord[]): string {
-  const header = ["日期", "時間", "品項", "異動類型", "數量變化", "單位", "批次到期日", "操作人", "備註"];
-  const lines = rows.map((m) => [taipeiDateKeyOf(m.createdAt), formatMovementTime(m.createdAt), m.itemName, m.movementType, m.quantityChange, m.unit, m.expiryDate, m.operatorName, m.note].map(csvCell).join(","));
-  // 開頭加 BOM，Excel 才會正確顯示中文。
-  return "﻿" + [header.join(","), ...lines].join("\r\n");
+  return toCsv(
+    ["日期", "時間", "品項", "異動類型", "數量變化", "單位", "批次到期日", "操作人", "備註"],
+    rows.map((m) => [taipeiDateKeyOf(m.createdAt), formatMovementTime(m.createdAt), m.itemName, m.movementType, m.quantityChange, m.unit, m.expiryDate, m.operatorName, m.note]),
+  );
 }

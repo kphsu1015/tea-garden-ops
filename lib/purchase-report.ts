@@ -1,3 +1,4 @@
+import { toCsv } from "@/lib/csv";
 // 進貨金額報表：共用型別、Asia/Taipei月份工具與Supabase RPC回傳值的camelCase轉換。
 // 所有金額加總都在Supabase RPC（Postgres numeric）裡完成，這裡只負責顯示格式，不做加總，避免JS浮點數誤差。
 
@@ -135,4 +136,48 @@ export function mapLineRow(row: RawLineRow): PurchaseReportLine {
     totalPrice: row.total_price !== null ? Number(row.total_price) : null,
     effectiveAmount: row.effective_amount !== null ? Number(row.effective_amount) : null,
   };
+}
+
+// ===== 進貨明細表：排序、小計、匯出（純函式） =====
+
+export type LineSortKey = "date" | "item" | "amount";
+export type SortDir = "asc" | "desc";
+
+// 金額空白的排最後（不管升冪降冪），同值時維持原本順序。
+export function sortReportLines(lines: PurchaseReportLine[], key: LineSortKey, dir: SortDir): PurchaseReportLine[] {
+  const sign = dir === "asc" ? 1 : -1;
+  return lines
+    .map((line, index) => ({ line, index }))
+    .sort((a, b) => {
+      if (key === "amount") {
+        const x = a.line.effectiveAmount, y = b.line.effectiveAmount;
+        if (x === null && y === null) return a.index - b.index;
+        if (x === null) return 1;
+        if (y === null) return -1;
+        return (x - y) * sign || a.index - b.index;
+      }
+      const x = key === "date" ? (a.line.purchaseDate ?? "") : a.line.itemName;
+      const y = key === "date" ? (b.line.purchaseDate ?? "") : b.line.itemName;
+      return x.localeCompare(y, "zh-Hant") * sign || a.index - b.index;
+    })
+    .map(({ line }) => line);
+}
+
+export interface LineSubtotal { lineCount: number; receiptCount: number; amount: number; incompleteCount: number }
+
+export function summarizeLines(lines: PurchaseReportLine[]): LineSubtotal {
+  let amount = 0, incompleteCount = 0;
+  const receipts = new Set<string>();
+  for (const line of lines) {
+    receipts.add(line.receiptId);
+    if (line.effectiveAmount === null) incompleteCount += 1; else amount += line.effectiveAmount;
+  }
+  return { lineCount: lines.length, receiptCount: receipts.size, amount: Math.round(amount * 100) / 100, incompleteCount };
+}
+
+export function purchaseLinesToCsv(lines: PurchaseReportLine[]): string {
+  return toCsv(
+    ["進貨日期", "供應商", "單據號碼", "品項名稱", "大分類", "數量", "單位", "單價", "品項金額"],
+    lines.map((l) => [l.purchaseDate, l.supplier || "未標示供應商", l.invoiceNumber, l.itemName, l.category, l.quantity, l.unit, l.unitPrice, l.effectiveAmount]),
+  );
 }

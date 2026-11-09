@@ -580,7 +580,7 @@ export function OperationsApp() {
         </header>
 
         <section className="content">
-          {view === "dashboard" && <Dashboard lowStock={lowStock} pending={pending} expiring={expiring} notes={notes} status={dashboardStatus} onRetry={retryDashboard} onView={openView} onInventory={openInventory} onPurchase={(name) => openPurchaseModal(name)} />}
+          {view === "dashboard" && <Dashboard lowStock={lowStock} pending={pending} expiring={expiring} notes={notes} status={dashboardStatus} onRetry={retryDashboard} onView={openView} onInventory={openInventory} onPurchase={(name) => openPurchaseModal(name)} canCount={canCountStock} onCount={(item) => { openInventory("expiring"); setCountingItem(item); }} />}
           {view === "inventory" && <InventoryView
             items={inventory}
             filter={inventoryFilter}
@@ -920,7 +920,7 @@ function UserMenu({ email, displayName, role, demo, onSaved }: {
 type SourceStatus = { loading: boolean; failed: boolean };
 
 // 總覽：一打開就知道今天要處理什麼。資料還在載入或載入失敗時，絕不顯示「0」讓人誤以為沒事。
-function Dashboard({ lowStock, pending, expiring, notes, status, onRetry, onView, onInventory, onPurchase }: {
+function Dashboard({ lowStock, pending, expiring, notes, status, onRetry, onView, onInventory, onPurchase, canCount, onCount }: {
   lowStock: InventoryItem[];
   pending: PurchaseRequest[];
   expiring: ExpiringBatch[];
@@ -930,6 +930,8 @@ function Dashboard({ lowStock, pending, expiring, notes, status, onRetry, onView
   onView: (v: View) => void;
   onInventory: (filter: StockFilter) => void;
   onPurchase: (itemName?: string) => void;
+  canCount: boolean;
+  onCount: (item: InventoryItem) => void;
 }) {
   const now = new Date();
   const greeting = greetingForHour(getTaipeiHour(now));
@@ -967,7 +969,7 @@ function Dashboard({ lowStock, pending, expiring, notes, status, onRetry, onView
           : <div className="compact-list">{pendingSorted.slice(0, 5).map((r) => <button type="button" key={r.id} className="compact-row-button" onClick={() => onView("purchases")}><div><strong>{r.itemName}</strong><small>{r.requester} · {r.requestedAt.slice(5, 10)}</small></div><b>{r.quantity}{r.unit}</b><span className="pill-group">{r.priority === "急件" && <Pill tone="red">急件</Pill>}<Status status={r.status} /></span></button>)}</div>}
       </Panel>
       <Panel title="快到期食材" icon={Clock3} more={ready(status.inventory) ? expiring.length - 6 : 0} moreLabel="批快到期" onMore={() => onInventory("expiring")}>
-        {!ready(status.inventory) ? <PanelPlaceholder loading={status.inventory.loading} /> : <div className="expiry-list">{expiring.length === 0 ? <p className="panel-empty">{EXPIRY_WINDOW_LABEL}內沒有到期的批次。</p> : expiring.slice(0, 6).map(({ item, batch, expiryDate, daysLeft }) => <div key={batch.id}><div><strong>{item.name}</strong><small>這批 {formatNumber(batch.quantity)}{item.unit} · {expiryDate} 到期</small></div><span className="pill-group"><Pill tone={daysLeft < 0 ? "red" : "gold"}>{expiryLabel(daysLeft)}</Pill><button type="button" className="row-text-button dashboard-row-action" onClick={() => onInventory("expiring")}>去處理</button></span></div>)}</div>}
+        {!ready(status.inventory) ? <PanelPlaceholder loading={status.inventory.loading} /> : <div className="expiry-list">{expiring.length === 0 ? <p className="panel-empty">{EXPIRY_WINDOW_LABEL}內沒有到期的批次。</p> : expiring.slice(0, 6).map(({ item, batch, expiryDate, daysLeft }) => <div key={batch.id}><div><strong>{item.name}</strong><small>這批 {formatNumber(batch.quantity)}{item.unit} · {expiryDate} 到期</small></div><span className="pill-group"><Pill tone={daysLeft < 0 ? "red" : "gold"}>{expiryLabel(daysLeft)}</Pill><button type="button" className="row-text-button dashboard-row-action" disabled={!canCount} onClick={() => onCount(item)} title={canCount ? "數完這項的實際數量，改成正確的數字" : "你的帳號沒有盤點權限"}><ClipboardCheck size={14} />盤點</button></span></div>)}</div>}
       </Panel>
       <Panel title="最新交接留言" icon={MessageSquareText} more={ready(status.notes) ? notes.length - 3 : 0} moreLabel="則留言" onMore={() => onView("notes")}>
         {!ready(status.notes) ? <PanelPlaceholder loading={status.notes.loading} /> : notes.length === 0 ? <p className="panel-empty">還沒有交接留言。</p>

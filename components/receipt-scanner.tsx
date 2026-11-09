@@ -12,6 +12,7 @@ import { formatCurrency } from "@/lib/purchase-report";
 import { calculateAmountMismatch, calculateReceiptTotals, deriveChargeAmountFromLine, splitAnalysisLines, type RawAnalysisLine } from "@/lib/receipt-calc";
 import { clearDraft, draftAgeLabel, loadDraft, saveDraft, type StoredDraft } from "@/lib/receipt-draft";
 import { describeDuplicate, findDuplicateReceipt } from "@/lib/receipt-duplicates";
+import { collectSuppliers } from "@/lib/receipt-suppliers";
 import { createClient } from "@/lib/supabase/client";
 import type { InventoryItem, ReceiptCharge, ReceiptChargeType, ReceiptLine, ReceiptRecord, UsagePeriod } from "@/lib/types";
 
@@ -389,6 +390,8 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
   const duplicateId = duplicate ? duplicate.receipt.id : serverHit ? "server" : null;
   const duplicateMessage = duplicate ? describeDuplicate(duplicate) : serverHit ? serverHit.message : "";
   const duplicateOk = !duplicateId || ackedDuplicateId === duplicateId;
+  // 常用供應商：從最近的進貨單與庫存品項整理，填供應商時一鍵帶入／下拉建議，避免同一家打出好幾種寫法。
+  const suppliers = collectSuppliers(receipts, inventory);
   const allResolved = hasAnyRow && allLinesResolved && chargesValid && hasTotalAmount && hasPurchaseDate && duplicateOk && badAmountLines.length === 0;
 
   // 入庫按鈕旁的「還差什麼」清單：按鈕變灰時直接寫出原因，點一下跳到要補的地方（手機、平板沒有滑鼠提示也看得到）。
@@ -595,7 +598,12 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
         </div>}
         {!analysis ? <div className="analysis-empty"><FileImage size={42} /><strong>{mode === "manual" ? "手動輸入的進貨單內容會顯示在這裡" : "辨識結果會顯示在這裡"}</strong><p>系統不會自動入庫，請先確認品項、數量與單位。</p></div> : <>
           <header><div><h2>{mode === "manual" ? "填寫進貨單內容" : "確認辨識結果"}</h2><p>{mode === "manual" ? "手動填寫供應商、品項與費用" : "可直接修改AI辨識錯誤的欄位"}</p></div><span>{analysis.lines.length}項庫存 · {analysis.charges.length}筆費用</span></header>
-          <div className="receipt-meta"><label>供應商<input value={analysis.supplier} onChange={(e) => setAnalysis({ ...analysis, supplier: e.target.value })} /></label><label>進貨日期（必填）<input id="receipt-date" required type="date" value={analysis.purchaseDate} onChange={(e) => setAnalysis({ ...analysis, purchaseDate: e.target.value })} /><small className="field-hint">進貨報表依這個日期分月統計。</small></label><label>單據號碼<input value={analysis.invoiceNumber || ""} onChange={(e) => setAnalysis({ ...analysis, invoiceNumber: e.target.value })} /></label><label>單據總額（必填）<input id="receipt-total" required type="number" min="0" step="0.01" value={analysis.totalAmount ?? ""} onChange={(e) => setAnalysis({ ...analysis, totalAmount: Number(e.target.value) || undefined })} /></label></div>
+          <div className="receipt-meta"><label>供應商<input list="receipt-supplier-options" autoComplete="off" value={analysis.supplier} onChange={(e) => setAnalysis({ ...analysis, supplier: e.target.value })} /></label><label>進貨日期（必填）<input id="receipt-date" required type="date" value={analysis.purchaseDate} onChange={(e) => setAnalysis({ ...analysis, purchaseDate: e.target.value })} /><small className="field-hint">進貨報表依這個日期分月統計。</small></label><label>單據號碼<input value={analysis.invoiceNumber || ""} onChange={(e) => setAnalysis({ ...analysis, invoiceNumber: e.target.value })} /></label><label>單據總額（必填）<input id="receipt-total" required type="number" min="0" step="0.01" value={analysis.totalAmount ?? ""} onChange={(e) => setAnalysis({ ...analysis, totalAmount: Number(e.target.value) || undefined })} /></label></div>
+          <datalist id="receipt-supplier-options">{suppliers.all.map((name) => <option key={name} value={name} />)}</datalist>
+          {suppliers.frequent.some((name) => name !== analysis.supplier.trim()) && <div className="supplier-chips" aria-label="常用供應商">
+            <small>常用供應商：</small>
+            {suppliers.frequent.filter((name) => name !== analysis.supplier.trim()).map((name) => <button key={name} type="button" className="chip-button" onClick={() => setAnalysis({ ...analysis, supplier: name })}>{name}</button>)}
+          </div>}
           {analysis.warnings.length > 0 && <div className="warning-box">{analysis.warnings.map((warning) => <span key={warning}>• {warning}</span>)}</div>}
 
           <div className="receipt-section-heading" id="receipt-lines-heading"><h3>庫存品項（{analysis.lines.length}）</h3><div className="receipt-section-actions"><button type="button" className="secondary-button" onClick={addExistingLine}><Plus size={14} />選擇現有品項</button>{canCreateItems && <button type="button" className="secondary-button" onClick={addLine}><Plus size={14} />手動新增品項</button>}</div></div>

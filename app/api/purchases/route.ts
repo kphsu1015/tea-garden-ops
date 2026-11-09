@@ -18,6 +18,8 @@ export async function GET() {
     const { data, error } = await supabase
       .from("purchase_requests")
       .select(PURCHASE_SELECT_COLUMNS)
+      // 已處理的歷史另外用 /api/purchases/history 分頁讀（不受 500 筆限制）；這裡只放還在進行中與暫緩的。
+      .neq("status", "stocked")
       .order("created_at", { ascending: false })
       .limit(500);
     if (error) throw error;

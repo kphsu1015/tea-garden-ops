@@ -1,8 +1,9 @@
 "use client";
 
-import { LoaderCircle, Plus, RefreshCw, Undo2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUp, GripVertical, LoaderCircle, Pencil, Plus, Power, RefreshCw, Trash2, Undo2, X } from "lucide-react";
 import { useRef, useState } from "react";
 import type { InventoryCategory } from "@/lib/types";
+import { ActionMenu } from "./action-menu";
 import { useDialogFocus } from "./use-dialog";
 
 type Orphan = { name: string; itemCount: number; receiptLineCount: number };
@@ -57,10 +58,9 @@ export function SettingsView({ categories, categoriesLoading, categoriesError, c
   };
 
   // 在「啟用中」的分類裡移動一格或移到最前，再把停用的接在後面，整份順序一次送出。
-  const move = async (category: InventoryCategory, how: "up" | "down" | "top") => {
+  const moveToIndex = async (category: InventoryCategory, to: number) => {
     const list = [...active];
     const from = list.findIndex((c) => c.id === category.id);
-    const to = how === "top" ? 0 : how === "up" ? from - 1 : from + 1;
     if (from < 0 || to < 0 || to >= list.length || to === from) return;
     const [item] = list.splice(from, 1);
     list.splice(to, 0, item);
@@ -68,6 +68,21 @@ export function SettingsView({ categories, categoriesLoading, categoriesError, c
     let next = 0;
     const fullOrder = sorted.map((c) => c.active ? list[next++].id : c.id);
     await runRowAction(category.id, () => onReorderCategories(fullOrder));
+  };
+  const move = (category: InventoryCategory, how: "up" | "down" | "top") => {
+    const from = active.findIndex((c) => c.id === category.id);
+    return moveToIndex(category, how === "top" ? 0 : how === "up" ? from - 1 : from + 1);
+  };
+  // 拖曳排序（滑鼠）：只能在「啟用中」的分類之間拖；手機、鍵盤用「⋯」選單的上移／下移／移到最前。
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+  const dropOn = async (target: InventoryCategory) => {
+    const id = dragId;
+    setDragId(null); setOverId(null);
+    if (!id || id === target.id) return;
+    const moving = active.find((c) => c.id === id);
+    const to = active.findIndex((c) => c.id === target.id);
+    if (moving && to >= 0) await moveToIndex(moving, to);
   };
 
   const saveRename = async (category: InventoryCategory) => {
@@ -105,7 +120,12 @@ export function SettingsView({ categories, categoriesLoading, categoriesError, c
     const busy = busyId === category.id;
     // 有任何一列正在處理、或正在編輯某一列時，其他列的操作先鎖住，避免互相蓋掉。
     const locked = busyId !== null || (editingId !== null && editingId !== category.id);
-    return <div key={category.id} className={category.active ? "category-row" : "category-row category-inactive"}>
+    const canDrag = editable && category.active && !locked;
+    return <div key={category.id}
+      className={`category-row${category.active ? "" : " category-inactive"}${dragId === category.id ? " is-dragging" : ""}${overId === category.id && dragId && dragId !== category.id ? " is-drop-target" : ""}`}
+      onDragOver={(e) => { if (dragId && category.active && dragId !== category.id) { e.preventDefault(); setOverId(category.id); } }}
+      onDragLeave={() => setOverId((current) => current === category.id ? null : current)}
+      onDrop={(e) => { e.preventDefault(); void dropOn(category); }}>
       {isEditing ? <div className="category-edit">
         <input value={editingName} maxLength={50} onChange={(e) => setEditingName(e.target.value)} aria-label="分類名稱" autoFocus onKeyDown={(e) => { if (e.key === "Enter") saveRename(category); if (e.key === "Escape") { setEditingId(null); setRowError(null); } }} />
         <button type="button" className="row-text-button" disabled={busy} onClick={() => saveRename(category)}>{busy ? "儲存中…" : "儲存"}</button>
@@ -114,16 +134,19 @@ export function SettingsView({ categories, categoriesLoading, categoriesError, c
       </div> : <>
         <div className="category-name"><strong>{category.name}</strong>{!category.active && <em className="inactive-label">已停用</em>}<small>{usageText(category)}</small></div>
         {editable && <div className="category-actions">
-          {category.active && <>
-            <button type="button" className="row-text-button" disabled={locked || index === 0} onClick={() => move(category, "top")} title="移到清單最前面">移到最前</button>
-            <button type="button" className="row-text-button" disabled={locked || index === 0} onClick={() => move(category, "up")}>上移</button>
-            <button type="button" className="row-text-button" disabled={locked || index === list.length - 1} onClick={() => move(category, "down")}>下移</button>
-          </>}
-          <button type="button" className="row-text-button" disabled={locked} onClick={() => { setEditingId(category.id); setEditingName(category.name); setRowError(null); }}>改名</button>
-          {category.active
-            ? <button type="button" className="row-text-button" disabled={locked} onClick={() => setActive(category, false)} title="停用後新增品項時不能再選，舊資料保留">停用</button>
-            : <button type="button" className="row-text-button" disabled={locked} onClick={() => setActive(category, true)}>重新啟用</button>}
-          <button type="button" className="row-text-button danger-text-button" disabled={locked || used(category)} onClick={() => setDeleting(category)} title={used(category) ? "還有品項或進貨紀錄在用，不能刪除；暫時不用請改成停用" : "刪除這個分類"}>刪除</button>
+          {category.active && <span className={canDrag ? "drag-handle" : "drag-handle is-disabled"} draggable={canDrag} title="按住拖曳可以調整順序（也可以用右邊「⋯」選單的上移、下移）"
+            onDragStart={(e) => { setDragId(category.id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", category.id); const row = (e.currentTarget as HTMLElement).closest(".category-row"); if (row) e.dataTransfer.setDragImage(row, 20, 20); }}
+            onDragEnd={() => { setDragId(null); setOverId(null); }}><GripVertical size={16} aria-hidden="true" /></span>}
+          <ActionMenu label={`${category.name}的更多操作`} items={[
+            { label: "移到最前", icon: ChevronsUp, onClick: () => move(category, "top"), hidden: !category.active, disabled: locked || index === 0 },
+            { label: "上移", icon: ArrowUp, onClick: () => move(category, "up"), hidden: !category.active, disabled: locked || index === 0 },
+            { label: "下移", icon: ArrowDown, onClick: () => move(category, "down"), hidden: !category.active, disabled: locked || index === list.length - 1 },
+            { label: "改名", icon: Pencil, onClick: () => { setEditingId(category.id); setEditingName(category.name); setRowError(null); }, disabled: locked },
+            category.active
+              ? { label: "停用", icon: Power, onClick: () => { void setActive(category, false); }, disabled: locked, note: "停用後新增品項時不能再選，舊資料保留" }
+              : { label: "重新啟用", icon: Power, onClick: () => { void setActive(category, true); }, disabled: locked },
+            { label: "刪除", icon: Trash2, onClick: () => setDeleting(category), danger: true, disabled: locked || used(category), note: used(category) ? "還有品項或進貨紀錄在用，不能刪除" : undefined },
+          ]} />
         </div>}
       </>}
       {rowError?.id === category.id && <div className="error-box" role="alert">{rowError.message}</div>}

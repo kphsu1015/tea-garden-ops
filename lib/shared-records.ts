@@ -37,7 +37,7 @@ export function purchaseStatusToDb(status: PurchaseStatus): string {
 }
 
 export const PURCHASE_SELECT_COLUMNS =
-  "id,inventory_item_id,item_name,quantity,unit,priority,status,note,created_at,staff_profiles!purchase_requests_requester_id_fkey(display_name)";
+  "id,inventory_item_id,item_name,quantity,unit,priority,status,note,created_at,updated_at,requester_id,staff_profiles!purchase_requests_requester_id_fkey(display_name)";
 
 type RawPurchaseRow = {
   id: string;
@@ -49,6 +49,8 @@ type RawPurchaseRow = {
   status: string;
   note: string | null;
   created_at: string;
+  updated_at: string;
+  requester_id: string;
   staff_profiles: { display_name: string } | { display_name: string }[] | null;
 };
 
@@ -64,6 +66,9 @@ export function mapPurchaseRow(row: RawPurchaseRow): PurchaseRequest {
     requester: firstOf(row.staff_profiles)?.display_name ?? "—",
     requestedAt: formatTaipeiDateTime(row.created_at),
     note: row.note ?? undefined,
+    requesterId: row.requester_id,
+    createdAtIso: row.created_at,
+    updatedAtIso: row.updated_at,
   };
 }
 

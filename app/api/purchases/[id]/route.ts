@@ -27,6 +27,32 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     if (body.status !== undefined && !isPurchaseStatus(body.status)) return NextResponse.json({ error: "採購狀態不正確。" }, { status: 400 });
     if (body.priority !== undefined && body.priority !== "一般" && body.priority !== "急件") return NextResponse.json({ error: "急迫程度不正確。" }, { status: 400 });
 
+    // 管理員與訂貨管家以外的人（管家）：只能改「自己提出、還在待確認」的需求的數量／備註，或撤回（＝暫緩）。
+    // 由資料庫函式 requester_update_purchase 檢查本人與狀態，不放寬整張表的更新權限。
+    if (session.role !== "admin" && session.role !== "purchaser") {
+      if (body.priority !== undefined || (body.status !== undefined && body.status !== "暫緩")) {
+        return NextResponse.json({ error: "只有管理員與訂貨管家可以推進採購狀態或修改急迫程度。你可以修改或撤回自己提出、還在待確認的需求。" }, { status: 403 });
+      }
+      const { error: rpcError } = await supabase.rpc("requester_update_purchase", {
+        p_id: id,
+        p_quantity: quantity ?? null,
+        p_note: body.note ?? null,
+        p_set_note: body.note !== undefined,
+        p_withdraw: body.status === "暫緩",
+      });
+      if (rpcError) {
+        if (rpcError.code === "P0002") return NextResponse.json({ error: "找不到這張採購需求。" }, { status: 404 });
+        if (rpcError.code === "P0012") return NextResponse.json({ error: "這張需求已經在處理中（不是待確認了），不能再修改或撤回，請找訂貨管家。" }, { status: 409 });
+        if (rpcError.code === "42501") return NextResponse.json({ error: "只能修改或撤回自己提出的需求。" }, { status: 403 });
+        if (rpcError.code === "22023") return NextResponse.json({ error: "數量或備註不正確。" }, { status: 400 });
+        throw rpcError;
+      }
+      const { data: own, error: ownError } = await supabase.from("purchase_requests").select(PURCHASE_SELECT_COLUMNS).eq("id", id).maybeSingle();
+      if (ownError) throw ownError;
+      if (!own) return NextResponse.json({ error: "找不到這張採購需求。" }, { status: 404 });
+      return NextResponse.json({ purchase: mapPurchaseRow(own) });
+    }
+
     let query = supabase
       .from("purchase_requests")
       .update({

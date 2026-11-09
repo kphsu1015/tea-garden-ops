@@ -79,6 +79,10 @@ export interface PurchaseRequest {
   requester: string;
   requestedAt: string;
   note?: string;
+  // 以下欄位 Supabase 模式才有：提出人id（判斷「是不是我提的」）、建立與最後更新的時間（算「等了幾天」）。
+  requesterId?: string;
+  createdAtIso?: string;
+  updatedAtIso?: string;
 }
 
 // 送出新採購需求時前端填的欄位；id、狀態、提出人、時間由伺服器（登入者身分）決定。

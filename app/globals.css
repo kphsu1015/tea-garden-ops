@@ -457,3 +457,25 @@ td .row-menu-list button small { display:inline;margin-top:0; }
 .category-list .row-text-button { display:inline-flex;place-items:unset;width:auto;height:30px;padding:0 10px;border:1px solid #ddd5c4;background:#fff;border-radius:8px; }
 .category-list .row-text-button:disabled { opacity:.45; }
 .category-orphans .row-text-button,.category-edit .row-text-button { height:30px;padding:0 10px; }
+
+/* 採購需求頁 */
+.purchase-toolbar { flex-wrap:wrap;align-items:center;margin-bottom:12px; }
+.purchase-toolbar .search-box { flex:1 1 220px;max-width:320px; }
+.chip-button { height:40px;padding:0 14px;border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--ink);font-size:13px;font-weight:700; }
+.chip-button.active { background:var(--forest);border-color:var(--forest);color:#fff; }
+.chip-button:focus-visible { outline:2px solid var(--gold);outline-offset:2px; }
+.purchase-filter-note { margin:0 0 10px; }
+.purchase-card-new { border-color:var(--forest);box-shadow:0 0 0 3px rgba(21,63,53,.18),0 6px 12px rgba(0,0,0,.05);animation:purchase-new-pulse 2s ease-out 1; }
+@keyframes purchase-new-pulse { from { box-shadow:0 0 0 8px rgba(21,63,53,.32),0 6px 12px rgba(0,0,0,.05); } to { box-shadow:0 0 0 3px rgba(21,63,53,.18),0 6px 12px rgba(0,0,0,.05); } }
+@media (prefers-reduced-motion:reduce){ .purchase-card-new { animation:none; } }
+.purchase-stock,.purchase-age { display:block;font-size:11.5px;color:#5b6a65;margin-top:4px; }
+.purchase-stock.low { color:#9b4836;font-weight:700; }
+.purchase-age { color:#8a6d3b; }
+.purchase-age.stale { color:#9b4836;font-weight:700; }
+.purchase-withdraw { margin-top:8px; }
+.purchase-done { margin-top:12px; }
+@media(max-width:760px){
+  .purchase-board { grid-template-columns:1fr;overflow:visible; }
+  .purchase-toolbar .search-box { max-width:none;flex-basis:100%; }
+}
+@media(max-width:760px){ .purchase-column-list { max-height:none;overflow:visible;padding-right:0; } }

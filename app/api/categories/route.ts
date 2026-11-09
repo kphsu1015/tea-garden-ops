@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { demoCategoryList, listCategories } from "@/lib/categories";
+import { demoCategoryList, listCategoriesWithOrphans } from "@/lib/categories";
 import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 
@@ -7,14 +7,14 @@ export const runtime = "nodejs";
 
 export async function GET() {
   const supabase = await createClient();
-  if (!supabase) return NextResponse.json({ categories: demoCategoryList(), demo: true });
+  if (!supabase) return NextResponse.json({ categories: demoCategoryList(), orphans: [], demo: true });
 
   const session = await requireStaffSession(supabase);
   if (!session.ok) return session.response;
 
   try {
-    const categories = await listCategories(supabase);
-    return NextResponse.json({ categories, demo: false });
+    const { categories, orphans } = await listCategoriesWithOrphans(supabase);
+    return NextResponse.json({ categories, orphans, demo: false });
   } catch (error) {
     console.error("List categories failed", error);
     return NextResponse.json({ error: "讀取分類失敗，請稍後再試。" }, { status: 500 });

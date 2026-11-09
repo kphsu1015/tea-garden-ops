@@ -108,22 +108,27 @@ function useStaffRole(session: ReturnType<typeof useSupabaseSession>) {
 
 function useCategories() {
   const [categories, setCategories] = useState<InventoryCategory[]>([]);
+  // 品項或進貨明細用到、但不在分類清單裡的名稱（例如早期改名沒有連動留下的舊名稱）。
+  const [orphans, setOrphans] = useState<Array<{ name: string; itemCount: number; receiptLineCount: number }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [demo, setDemo] = useState(false);
 
   // silent：背景同步時不顯示「載入中」，失敗也不蓋掉畫面上已有的資料。
-  const refresh = async (silent = false) => {
+  // reportFailure：操作成功後的重新讀取失敗時，也要告訴使用者畫面可能不是最新的（背景同步則不打擾）。
+  const refresh = async (silent = false, reportFailure = false) => {
     if (!silent) { setLoading(true); setError(""); }
     try {
       const response = await fetch("/api/categories");
-      const data = await response.json() as { categories?: InventoryCategory[]; demo?: boolean; error?: string };
+      const data = await response.json() as { categories?: InventoryCategory[]; orphans?: Array<{ name: string; itemCount: number; receiptLineCount: number }>; demo?: boolean; error?: string };
       if (!response.ok) throw new Error(data.error || "讀取分類失敗");
       setCategories(data.categories || []);
+      setOrphans(data.orphans || []);
       setDemo(Boolean(data.demo));
       setError("");
     } catch (reason) {
       if (!silent) setError(reason instanceof Error ? reason.message : "讀取分類失敗，請稍後再試。");
+      else if (reportFailure) setError("剛剛的操作已經完成，但重新載入分類失敗，畫面上的資料可能不是最新的。");
     } finally {
       if (!silent) setLoading(false);
     }
@@ -139,7 +144,7 @@ function useCategories() {
       const response = await request();
       const data = await response.json() as { error?: string };
       if (!response.ok) return data.error || "操作失敗，請稍後再試。";
-      await refresh();
+      await refresh(true, true);
     } catch (reason) {
       return reason instanceof Error ? reason.message : "操作失敗，請稍後再試。";
     }
@@ -159,23 +164,12 @@ function useCategories() {
 
   const deleteCategory = (id: string) => mutate(() => fetch(`/api/categories/${id}`, { method: "DELETE" }));
 
-  const reorderCategory = async (id: string, direction: "up" | "down"): Promise<string | void> => {
-    const sorted = [...categories].sort((a, b) => a.sortOrder - b.sortOrder);
-    const index = sorted.findIndex((c) => c.id === id);
-    const swapIndex = direction === "up" ? index - 1 : index + 1;
-    if (index < 0 || swapIndex < 0 || swapIndex >= sorted.length) return;
-    const current = sorted[index];
-    const target = sorted[swapIndex];
-    return mutate(async () => {
-      const [resA, resB] = await Promise.all([
-        fetch(`/api/categories/${current.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sortOrder: target.sortOrder }) }),
-        fetch(`/api/categories/${target.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sortOrder: current.sortOrder }) }),
-      ]);
-      return resA.ok ? resB : resA;
-    });
-  };
+  // 一次送出所有分類的新順序，由資料庫函式在單一交易內整批更新（不會出現兩個分類順序相同）。
+  const reorderCategories = (ids: string[]) => mutate(() => fetch("/api/categories/reorder", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }),
+  }));
 
-  return { categories, loading, error, demo, addCategory, renameCategory, toggleCategoryActive, deleteCategory, reorderCategory, refresh };
+  return { categories, orphans, loading, error, demo, addCategory, renameCategory, toggleCategoryActive, deleteCategory, reorderCategories, refresh };
 }
 
 function useInventory() {
@@ -660,11 +654,14 @@ export function OperationsApp() {
             categoriesLoading={categoryState.loading}
             categoriesError={categoryState.error}
             categoriesDemo={categoryState.demo}
+            orphans={categoryState.orphans}
+            canManageCategories={role === "admin"}
+            onRetryCategories={() => { void categoryState.refresh(); }}
             retentionDays={retentionDays}
             canEditRetention={role === "admin" || role === "purchaser" || !session.configured}
             onAddCategory={categoryState.addCategory}
             onRenameCategory={categoryState.renameCategory}
-            onReorderCategory={categoryState.reorderCategory}
+            onReorderCategories={categoryState.reorderCategories}
             onToggleCategoryActive={categoryState.toggleCategoryActive}
             onDeleteCategory={categoryState.deleteCategory}
             onRetentionChange={changeRetentionDays}

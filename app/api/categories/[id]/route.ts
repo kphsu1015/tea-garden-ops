@@ -19,21 +19,37 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   try {
     const body = await request.json() as { name?: string; active?: boolean; sortOrder?: number };
     const updates: Record<string, unknown> = {};
+    let newName: string | null = null;
     if (typeof body.name === "string") {
       const name = body.name.trim();
       if (!name) return NextResponse.json({ error: "請輸入分類名稱。" }, { status: 400 });
       if (name.length > 50) return NextResponse.json({ error: "分類名稱最多50個字。" }, { status: 400 });
-      updates.name = name;
+      newName = name;
     }
     if (typeof body.active === "boolean") updates.active = body.active;
-    if (typeof body.sortOrder === "number") updates.sort_order = body.sortOrder;
-    if (Object.keys(updates).length === 0) return NextResponse.json({ error: "沒有可更新的欄位。" }, { status: 400 });
+    if (typeof body.sortOrder === "number") {
+      if (!Number.isInteger(body.sortOrder)) return NextResponse.json({ error: "排序必須是整數。" }, { status: 400 });
+      updates.sort_order = body.sortOrder;
+    }
+    if (newName === null && Object.keys(updates).length === 0) return NextResponse.json({ error: "沒有可更新的欄位。" }, { status: 400 });
 
-    const { data, error } = await supabase
-      .from("inventory_categories")
-      .update(updates)
-      .eq("id", id)
-      .select("id,name,sort_order,active,created_at");
+    // 改名：資料庫函式會在同一個交易裡，把這個分類底下的庫存品項與進貨明細一起改成新名稱。
+    if (newName !== null) {
+      const { error: renameError } = await supabase.rpc("rename_inventory_category", { p_id: id, p_name: newName });
+      if (renameError) {
+        if (renameError.code === "23505") return NextResponse.json({ error: "已有相同名稱的分類。" }, { status: 409 });
+        if (renameError.code === "42501") return NextResponse.json({ error: FORBIDDEN_MESSAGE }, { status: 403 });
+        if (renameError.code === "P0002") return NextResponse.json({ error: "找不到這個分類。" }, { status: 404 });
+        if (renameError.code === "22023") return NextResponse.json({ error: "分類名稱不正確。" }, { status: 400 });
+        throw renameError;
+      }
+    }
+
+    // 只改名時沒有其他欄位要更新（空的更新會出錯），直接讀回目前的資料。
+    const columns = "id,name,sort_order,active,created_at";
+    const { data, error } = Object.keys(updates).length === 0
+      ? await supabase.from("inventory_categories").select(columns).eq("id", id)
+      : await supabase.from("inventory_categories").update(updates).eq("id", id).select(columns);
     if (error) {
       if (error.code === "23505") return NextResponse.json({ error: "已有相同名稱的分類。" }, { status: 409 });
       if (error.code === "42501") return NextResponse.json({ error: FORBIDDEN_MESSAGE }, { status: 403 });

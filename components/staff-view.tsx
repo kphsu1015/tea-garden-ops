@@ -2,6 +2,7 @@
 
 import { LoaderCircle, Mail, Plus, RefreshCw, Search, Undo2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useDialogFocus } from "./use-dialog";
 import {
   ASSIGNABLE_STAFF_ROLES, COMMON_STAFF_ABILITIES, INVITABLE_STAFF_ROLES, STAFF_ROLE_PERMISSIONS,
   adminChangeBlockedReason, countActiveAdmins, filterStaff, hasPlaceholderName, staffRoleLabel,
@@ -325,7 +326,7 @@ function ConfirmModal({ title, subtitle, body, confirmLabel, danger, onClose, on
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const cancelRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const submittingRef = useRef(false);
   const run = async () => {
     setSubmitting(true); submittingRef.current = true; setError("");
@@ -333,21 +334,14 @@ function ConfirmModal({ title, subtitle, body, confirmLabel, danger, onClose, on
     setSubmitting(false); submittingRef.current = false;
     if (failure) setError(failure);
   };
-  // 開啟時把焦點放在「取消」（比較安全的選項），按 Esc 可以關閉，關閉後焦點回到原本按下的那顆按鈕。
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
-    cancelRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !submittingRef.current) onClose(); };
-    document.addEventListener("keydown", onKey);
-    return () => { document.removeEventListener("keydown", onKey); opener?.focus?.(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && !submitting && onClose()}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  // 開啟時把焦點放在「取消」（比較安全的選項），Tab 只在視窗內循環，按 Esc 可以關閉，關閉後焦點回到原本按下的那顆按鈕。
+  useDialogFocus(dialogRef, onClose, () => submittingRef.current);
+  return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && !submitting && onClose()}><div className="modal" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="confirm-title">
     <header><div><h2 id="confirm-title">{title}</h2><p>{subtitle}</p></div><button onClick={onClose} disabled={submitting} aria-label="關閉" title="關閉"><X /></button></header>
     <div className="modal-body">
       {body}
       {error && <div className="error-box" role="alert">{error}</div>}
-      <div className="modal-actions"><button type="button" ref={cancelRef} className="secondary-button" onClick={onClose} disabled={submitting}>取消</button><button className={danger ? "primary-button danger-button" : "primary-button"} onClick={run} disabled={submitting}>{submitting ? "處理中…" : confirmLabel}</button></div>
+      <div className="modal-actions"><button type="button" data-autofocus className="secondary-button" onClick={onClose} disabled={submitting}>取消</button><button className={danger ? "primary-button danger-button" : "primary-button"} onClick={run} disabled={submitting}>{submitting ? "處理中…" : confirmLabel}</button></div>
     </div>
   </div></div>;
 }

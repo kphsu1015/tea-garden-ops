@@ -13,13 +13,16 @@ export async function GET() {
   if (!session.ok) return session.response;
 
   try {
-    const { data, error } = await supabase
-      .from("handover_notes")
-      .select(NOTE_SELECT_COLUMNS)
-      .order("created_at", { ascending: false })
-      .limit(500);
-    if (error) throw error;
-    return NextResponse.json({ notes: (data ?? []).map(mapNoteRow), demo: false });
+    // 未處理的留言一定要全部拿到（不能被「最新幾筆」擠掉），已處理的只留最近的一批。
+    const base = () => supabase.from("handover_notes").select(NOTE_SELECT_COLUMNS).is("deleted_at", null).order("created_at", { ascending: false });
+    const [open, done] = await Promise.all([
+      base().is("resolved_at", null).limit(500),
+      base().not("resolved_at", "is", null).limit(200),
+    ]);
+    if (open.error) throw open.error;
+    if (done.error) throw done.error;
+    const rows = [...(open.data ?? []), ...(done.data ?? [])] as unknown as Parameters<typeof mapNoteRow>[0][];
+    return NextResponse.json({ notes: rows.map(mapNoteRow), demo: false });
   } catch (error) {
     console.error("List handover notes failed", error);
     return NextResponse.json({ error: "讀取交接留言失敗，請稍後再試。" }, { status: 500 });

@@ -72,7 +72,7 @@ export function mapPurchaseRow(row: RawPurchaseRow): PurchaseRequest {
 export const NOTE_CATEGORIES: HandoverNote["category"][] = ["客人需求", "房務問題", "設備維修", "餐飲", "重要公告"];
 
 export const NOTE_SELECT_COLUMNS =
-  "id,category,content,important,created_at,staff_profiles!handover_notes_author_id_fkey(display_name)";
+  "id,category,content,important,created_at,author_id,resolved_at,edited_at,staff_profiles!handover_notes_author_id_fkey(display_name),resolver:staff_profiles!handover_notes_resolved_by_fkey(display_name)";
 
 type RawNoteRow = {
   id: string;
@@ -80,7 +80,11 @@ type RawNoteRow = {
   content: string;
   important: boolean;
   created_at: string;
+  author_id: string;
+  resolved_at: string | null;
+  edited_at: string | null;
   staff_profiles: { display_name: string } | { display_name: string }[] | null;
+  resolver: { display_name: string } | { display_name: string }[] | null;
 };
 
 export function mapNoteRow(row: RawNoteRow): HandoverNote {
@@ -91,6 +95,10 @@ export function mapNoteRow(row: RawNoteRow): HandoverNote {
     author: firstOf(row.staff_profiles)?.display_name ?? "—",
     createdAt: formatTaipeiDateTime(row.created_at),
     important: row.important,
+    authorId: row.author_id,
+    resolvedAt: row.resolved_at ? formatTaipeiDateTime(row.resolved_at) : null,
+    resolvedBy: row.resolved_at ? (firstOf(row.resolver)?.display_name ?? "—") : null,
+    editedAt: row.edited_at ? formatTaipeiDateTime(row.edited_at) : null,
   };
 }
 

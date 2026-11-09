@@ -91,6 +91,11 @@ export interface HandoverNote {
   author: string;
   createdAt: string;
   important: boolean;
+  // 以下欄位 Supabase 模式才有（示範模式的本機資料會自己帶）。
+  authorId?: string;
+  resolvedAt?: string | null;
+  resolvedBy?: string | null;
+  editedAt?: string | null;
 }
 
 export type NoteDraft = Pick<HandoverNote, "category" | "content" | "important">;

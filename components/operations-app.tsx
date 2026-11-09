@@ -327,6 +327,11 @@ export function OperationsApp() {
   const [movingItem, setMovingItem] = useState<InventoryItem | null>(null);
   const [stockNotice, setStockNotice] = useState<StockNotice | null>(null);
   const [deletingNote, setDeletingNote] = useState<HandoverNote | null>(null);
+  const [editingNote, setEditingNote] = useState<HandoverNote | null>(null);
+  // 交接留言頁上方的提示：新增／編輯／刪除成功，或失敗；刪除後可以復原。
+  const [noteNotice, setNoteNotice] = useState<NoteNotice | null>(null);
+  // 新增留言後把留言頁的篩選重設（回到「未處理」、全部分類、清掉搜尋），不然新留言可能被目前的篩選藏起來。
+  const [notesViewKey, setNotesViewKey] = useState(0);
   const [query, setQuery] = useState("");
   // 庫存頁的篩選：從總覽點「低庫存」「即將過期」進來時直接套用；從側邊選單進來回到「全部」。
   const [inventoryFilter, setInventoryFilter] = useState<StockFilter>("all");
@@ -398,14 +403,43 @@ export function OperationsApp() {
     if (error) return error;
     await notesState.refresh(true);
   };
-  const deleteNote = async (id: string): Promise<string | void> => {
+  const editNote = async (id: string, draft: NoteDraft): Promise<string | void> => {
     if (!session.configured) {
-      setLocalNotes(localNotes.filter((n) => n.id !== id));
+      setLocalNotes(localNotes.map((n) => n.id === id ? { ...n, ...draft, editedAt: new Date().toLocaleString("zh-TW", { hour12: false }) } : n));
       return;
     }
-    const error = await requestJson(`/api/notes/${id}`, "DELETE");
+    const error = await requestJson(`/api/notes/${id}`, "PATCH", { action: "edit", ...draft });
     if (error) return error;
     await notesState.refresh(true);
+  };
+  const resolveNote = async (id: string, resolved: boolean): Promise<string | void> => {
+    if (!session.configured) {
+      setLocalNotes(localNotes.map((n) => n.id === id ? { ...n, resolvedAt: resolved ? new Date().toLocaleString("zh-TW", { hour12: false }) : null, resolvedBy: resolved ? "Alan" : null } : n));
+      return;
+    }
+    const error = await requestJson(`/api/notes/${id}`, "PATCH", { action: resolved ? "resolve" : "reopen" });
+    if (error) return error;
+    await notesState.refresh(true);
+  };
+  // 刪除是軟刪除（資料還在，只是不顯示），所以可以復原。
+  const deleteNote = async (note: HandoverNote): Promise<string | void> => {
+    if (!session.configured) {
+      setLocalNotes(localNotes.filter((n) => n.id !== note.id));
+    } else {
+      const error = await requestJson(`/api/notes/${note.id}`, "DELETE");
+      if (error) return error;
+      await notesState.refresh(true);
+    }
+    const restore = async (): Promise<string | void> => {
+      if (!session.configured) {
+        setLocalNotes((current) => current.some((n) => n.id === note.id) ? current : [note, ...current]);
+        return;
+      }
+      const error = await requestJson(`/api/notes/${note.id}`, "PATCH", { action: "restore" });
+      if (error) return error;
+      await notesState.refresh(true);
+    };
+    setNoteNotice({ message: "已刪除這則留言。", restore });
   };
   const changeRetentionDays = async (days: number): Promise<string | void> => {
     if (!session.configured) {
@@ -537,7 +571,7 @@ export function OperationsApp() {
   }
   if (!isLoggedIn) return <LoginScreen supabaseConfigured={session.configured} onDemoLogin={() => setDemoLoggedIn(true)} unauthorized={rejected} />;
 
-  const openView = (next: View) => { setView(next); setMobileNav(false); setStockNotice(null); if (next === "inventory") setInventoryFilter("all"); };
+  const openView = (next: View) => { setView(next); setMobileNav(false); setStockNotice(null); setNoteNotice(null); if (next === "inventory") setInventoryFilter("all"); };
   // 從總覽點卡片進來：清掉之前的搜尋字，不然結果會跟卡片上的數字對不上。
   const openInventory = (filter: StockFilter) => { setView("inventory"); setMobileNav(false); setInventoryFilter(filter); setQuery(""); };
   const handleLogout = () => { if (session.configured) session.signOut(); else setDemoLoggedIn(false); };
@@ -580,7 +614,7 @@ export function OperationsApp() {
         </header>
 
         <section className="content">
-          {view === "dashboard" && <Dashboard lowStock={lowStock} pending={pending} expiring={expiring} notes={notes} status={dashboardStatus} onRetry={retryDashboard} onView={openView} onInventory={openInventory} onPurchase={(name) => openPurchaseModal(name)} canCount={canCountStock} onCount={(item) => { openInventory("expiring"); setCountingItem(item); }} />}
+          {view === "dashboard" && <Dashboard lowStock={lowStock} pending={pending} expiring={expiring} notes={notes.filter((n) => !n.resolvedAt)} status={dashboardStatus} onRetry={retryDashboard} onView={openView} onInventory={openInventory} onPurchase={(name) => openPurchaseModal(name)} canCount={canCountStock} onCount={(item) => { openInventory("expiring"); setCountingItem(item); }} />}
           {view === "inventory" && <InventoryView
             items={inventory}
             filter={inventoryFilter}
@@ -615,7 +649,10 @@ export function OperationsApp() {
           }} />}
           {view === "movement-log" && <MovementLogView inventory={inventory} />}
           {view === "report" && <PurchaseReportView canView={canViewPurchaseReport} canManage={role === "admin"} />}
-          {view === "notes" && <NotesView notes={notes} loading={session.configured && notesState.loading} loadError={session.configured ? notesState.error : ""} canManage={role === "admin"} onNew={() => setModal("note")} onDelete={(note) => setDeletingNote(note)} />}
+          {view === "notes" && <NotesView key={notesViewKey} notes={notes} loading={session.configured && notesState.loading} loadError={session.configured ? notesState.error : ""} onRetry={() => { void notesState.refresh(); }} isAdmin={role === "admin" || !session.configured} userId={session.configured ? session.userId : null} notice={noteNotice} onDismissNotice={() => setNoteNotice(null)} onNew={() => { setNoteNotice(null); setModal("note"); }} onEdit={(note) => { setNoteNotice(null); setEditingNote(note); }} onResolve={async (note, resolved) => {
+            const error = await resolveNote(note.id, resolved);
+            setNoteNotice(error ? { message: `操作失敗：${error}`, error: true } : { message: resolved ? "已標記為已處理，這則留言收進「已處理」分頁。" : "已改回未處理。" });
+          }} onDelete={(note) => { setNoteNotice(null); setDeletingNote(note); }} />}
           {view === "staff" && <StaffView canView={role === "admin"} canManage={role === "admin"} currentUserId={session.userId} />}
           {view === "settings" && <SettingsView
             categories={categoryState.categories}
@@ -647,7 +684,8 @@ export function OperationsApp() {
           return error;
         }}
       />}
-      {modal === "note" && <NoteModal onClose={() => setModal(null)} onSave={async (draft) => { const error = await addNote(draft); if (error) return error; setModal(null); }} />}
+      {modal === "note" && <NoteModal onClose={() => setModal(null)} onSave={async (draft) => { const error = await addNote(draft); if (error) return error; setModal(null); setNotesViewKey((k) => k + 1); setNoteNotice({ message: "已新增留言，下一班打開就看得到。" }); }} />}
+      {editingNote && <NoteModal note={editingNote} onClose={() => setEditingNote(null)} onSave={async (draft) => { const error = await editNote(editingNote.id, draft); if (error) return error; setEditingNote(null); setNoteNotice({ message: "已儲存修改。" }); }} />}
       {deletingItem && <ConfirmDeleteItemModal
         item={deletingItem}
         onClose={() => setDeletingItem(null)}
@@ -667,7 +705,7 @@ export function OperationsApp() {
       {deletingNote && <ConfirmDeleteNoteModal
         note={deletingNote}
         onClose={() => setDeletingNote(null)}
-        onConfirm={() => deleteNote(deletingNote.id)}
+        onConfirm={() => deleteNote(deletingNote)}
       />}
     </div>
   );
@@ -957,7 +995,7 @@ function Dashboard({ lowStock, pending, expiring, notes, status, onRetry, onView
       <Stat icon={AlertTriangle} label="低庫存" hint="少於安全庫存或預估用量" value={value(status.inventory, lowStock.length)} tone="red" onClick={() => onInventory("low")} />
       <Stat icon={ShoppingCart} label="待處理採購" hint={ready(status.purchases) && urgent.length > 0 ? `其中 ${urgent.length} 張急件` : "還沒入庫的需求"} urgentHint={ready(status.purchases) && urgent.length > 0} value={value(status.purchases, pending.length)} tone="sage" onClick={() => onView("purchases")} />
       <Stat icon={Clock3} label="快到期" hint={`已過期或${EXPIRY_WINDOW_LABEL}內到期`} value={value(status.inventory, expiring.length)} tone="gold" onClick={() => onInventory("expiring")} />
-      <Stat icon={MessageSquareText} label="交接留言" hint="全部留言" value={value(status.notes, notes.length)} tone="blue" onClick={() => onView("notes")} />
+      <Stat icon={MessageSquareText} label="交接留言" hint="還沒處理的留言" value={value(status.notes, notes.length)} tone="blue" onClick={() => onView("notes")} />
     </div>
     <div className="dashboard-grid">
       <Panel title="低庫存品項" icon={Box} more={ready(status.inventory) ? lowStock.length - 5 : 0} moreLabel="項低庫存" onMore={() => onInventory("low")}>
@@ -972,7 +1010,7 @@ function Dashboard({ lowStock, pending, expiring, notes, status, onRetry, onView
         {!ready(status.inventory) ? <PanelPlaceholder loading={status.inventory.loading} /> : <div className="expiry-list">{expiring.length === 0 ? <p className="panel-empty">{EXPIRY_WINDOW_LABEL}內沒有到期的批次。</p> : expiring.slice(0, 6).map(({ item, batch, expiryDate, daysLeft }) => <div key={batch.id}><div><strong>{item.name}</strong><small>這批 {formatNumber(batch.quantity)}{item.unit} · {expiryDate} 到期</small></div><span className="pill-group"><Pill tone={daysLeft < 0 ? "red" : "gold"}>{expiryLabel(daysLeft)}</Pill><button type="button" className="row-text-button dashboard-row-action" disabled={!canCount} onClick={() => onCount(item)} title={canCount ? "數完這項的實際數量，改成正確的數字" : "你的帳號沒有盤點權限"}><ClipboardCheck size={14} />盤點</button></span></div>)}</div>}
       </Panel>
       <Panel title="最新交接留言" icon={MessageSquareText} more={ready(status.notes) ? notes.length - 3 : 0} moreLabel="則留言" onMore={() => onView("notes")}>
-        {!ready(status.notes) ? <PanelPlaceholder loading={status.notes.loading} /> : notes.length === 0 ? <p className="panel-empty">還沒有交接留言。</p>
+        {!ready(status.notes) ? <PanelPlaceholder loading={status.notes.loading} /> : notes.length === 0 ? <p className="panel-empty">沒有需要接手的留言。</p>
           : <div className="note-list">{notes.slice(0, 3).map((note) => <div key={note.id}><span className={note.important ? "note-dot important" : "note-dot"} /><div><strong>{note.content}</strong><small>{note.author} · {note.createdAt}</small></div></div>)}</div>}
       </Panel>
     </div>
@@ -1531,10 +1569,108 @@ function MovementLogView({ inventory }: { inventory: InventoryItem[] }) {
 }
 
 
-function NotesView({ notes, loading, loadError, canManage, onNew, onDelete }: { notes: HandoverNote[]; loading: boolean; loadError: string; canManage: boolean; onNew: () => void; onDelete: (note: HandoverNote) => void }) {
-  return <><PageHeader title="交接留言" subtitle="將客人需求、房務、設備與餐飲事項留在對的位置。" button="新增交接留言" onClick={onNew} />{loadError && <div className="error-box">{loadError}</div>}{loading && notes.length === 0 && <p>載入交接留言中…</p>}<div className="notes-page">{notes.map((note) => <article key={note.id}><header><Pill tone={note.important ? "red" : "sage"}>{note.category}</Pill>{note.important && <span className="important-label">重要</span>}{canManage && <button className="note-delete" aria-label="刪除留言" onClick={() => onDelete(note)}><Trash2 size={15} /></button>}</header><p>{note.content}</p><footer>{note.author}<span>{note.createdAt}</span></footer></article>)}</div></>;
-}
+type NoteNotice = { message: string; error?: boolean; restore?: () => Promise<string | void> };
+type NoteTab = "open" | "done" | "all";
+const NOTES_PAGE_SIZE = 30;
+const NOTE_CATEGORY_OPTIONS: HandoverNote["category"][] = ["客人需求", "房務問題", "設備維修", "餐飲", "重要公告"];
 
+function NotesView({ notes, loading, loadError, onRetry, isAdmin, userId, notice, onDismissNotice, onNew, onEdit, onResolve, onDelete }: {
+  notes: HandoverNote[];
+  loading: boolean;
+  loadError: string;
+  onRetry: () => void;
+  isAdmin: boolean;
+  userId: string | null;
+  notice: NoteNotice | null;
+  onDismissNotice: () => void;
+  onNew: () => void;
+  onEdit: (note: HandoverNote) => void;
+  onResolve: (note: HandoverNote, resolved: boolean) => Promise<void>;
+  onDelete: (note: HandoverNote) => void;
+}) {
+  const [tab, setTab] = useState<NoteTab>("open");
+  const [category, setCategory] = useState("全部");
+  const [query, setQuery] = useState("");
+  const [limit, setLimit] = useState(NOTES_PAGE_SIZE);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  // 復原失敗的訊息綁在「那一則提示」上；提示換掉（新操作）就不再顯示舊的失敗。
+  const [restoreFail, setRestoreFail] = useState<{ notice: NoteNotice; message: string } | null>(null);
+  const restoreError = restoreFail && restoreFail.notice === notice ? restoreFail.message : "";
+  const q = query.trim().toLowerCase();
+  // 分頁籤的數字只看分類與搜尋，不看目前選哪個分頁，切換時數字才不會跳。
+  const scoped = notes.filter((n) => (category === "全部" || n.category === category) && (!q || `${n.content} ${n.author}`.toLowerCase().includes(q)));
+  const counts = { open: scoped.filter((n) => !n.resolvedAt).length, done: scoped.filter((n) => n.resolvedAt).length, all: scoped.length };
+  // 排序：未處理的重要留言最上面，其次未處理，已處理的放最後；同一組內維持新的在前。
+  const rank = (n: HandoverNote) => n.resolvedAt ? 2 : n.important ? 0 : 1;
+  const shown = scoped
+    .filter((n) => tab === "all" || (tab === "open" ? !n.resolvedAt : Boolean(n.resolvedAt)))
+    .map((n, i) => ({ n, i }))
+    .sort((a, b) => rank(a.n) - rank(b.n) || a.i - b.i)
+    .map(({ n }) => n);
+  const visible = shown.slice(0, limit);
+  const filtering = category !== "全部" || q !== "";
+  const resolve = async (note: HandoverNote, resolved: boolean) => { setBusyId(note.id); try { await onResolve(note, resolved); } finally { setBusyId(null); } };
+  const undoDelete = async () => {
+    if (!notice?.restore) return;
+    setRestoring(true); setRestoreFail(null);
+    try { const error = await notice.restore(); if (error) setRestoreFail({ notice, message: error }); else onDismissNotice(); } finally { setRestoring(false); }
+  };
+  const emptyText = notes.length === 0 || shown.length > 0 ? null
+    : filtering ? "沒有符合的留言。"
+    : tab === "open" ? "目前沒有需要接手的留言，都處理完了。"
+    : tab === "done" ? "還沒有標成已處理的留言。" : "沒有留言。";
+
+  return <>
+    <PageHeader title="交接留言" subtitle="全員都看得到。處理完的留言標成「已處理」，會收進另一個分頁，不會被刪掉。" button="新增交接留言" onClick={onNew} />
+    {loadError && <div className="error-box inventory-notice" role="alert"><span>{loadError}</span><button type="button" className="text-button" onClick={onRetry}><RefreshCw size={14} />重新載入</button></div>}
+    {notice && <div className={notice.error || restoreError ? "error-box inventory-notice" : "inventory-notice"} role={notice.error || restoreError ? "alert" : "status"}>
+      <span>{restoreError ? `復原失敗：${restoreError}` : notice.message}</span>
+      {notice.restore && <button type="button" className="text-button" onClick={undoDelete} disabled={restoring}><Undo2 size={14} />{restoring ? "復原中…" : restoreError ? "再試一次" : "復原"}</button>}
+      <button type="button" className="notice-close" aria-label="關閉提示" title="關閉提示" onClick={onDismissNotice}><X size={14} /></button>
+    </div>}
+    {loading && notes.length === 0 && !loadError && <p className="panel-empty">載入交接留言中…</p>}
+    {notes.length === 0 && !loading && !loadError && <div className="notes-empty">
+      <MessageSquareText size={28} />
+      <strong>還沒有交接留言</strong>
+      <p>客人需求、房務、設備維修、餐飲，下一班需要知道的事都寫在這裡。</p>
+      <button type="button" className="primary-button" onClick={onNew}><Plus size={18} />寫第一則留言</button>
+    </div>}
+    {notes.length > 0 && <>
+      <div className="notes-toolbar">
+        <div className="stock-filter" role="group" aria-label="留言狀態">
+          {([["open", "未處理"], ["done", "已處理"], ["all", "全部"]] as const).map(([id, label]) => <button key={id} type="button" className={tab === id ? "active" : ""} aria-pressed={tab === id} onClick={() => { setTab(id); setLimit(NOTES_PAGE_SIZE); }}>{label}<span>{counts[id]}</span></button>)}
+        </div>
+        <select value={category} onChange={(e) => { setCategory(e.target.value); setLimit(NOTES_PAGE_SIZE); }} aria-label="依分類篩選"><option value="全部">全部分類</option>{NOTE_CATEGORY_OPTIONS.map((c) => <option key={c}>{c}</option>)}</select>
+        <div className="search-box"><Search size={18} /><input placeholder="搜尋留言內容或作者" value={query} onChange={(e) => { setQuery(e.target.value); setLimit(NOTES_PAGE_SIZE); }} aria-label="搜尋留言內容或作者" /></div>
+      </div>
+      {emptyText && <div className="notes-empty compact"><p>{emptyText}</p>{filtering && <button type="button" className="secondary-button" onClick={() => { setCategory("全部"); setQuery(""); }}>清除篩選</button>}</div>}
+      <div className="notes-page">{visible.map((note) => {
+        // userId 為 null 是示範模式（本機資料，沒有帳號），全部可以編輯。
+        const canEdit = isAdmin || userId === null || note.authorId === userId;
+        const done = Boolean(note.resolvedAt);
+        return <article key={note.id} className={done ? "note-done" : note.important ? "note-important" : ""}>
+          <header>
+            <Pill tone={note.important && !done ? "red" : "sage"}>{note.category}</Pill>
+            {note.important && !done && <span className="important-label">重要</span>}
+            {done && <span className="note-done-label"><Check size={13} />已處理</span>}
+            {(canEdit || isAdmin) && <span className="note-menu"><ActionMenu label="這則留言的更多操作" items={[
+              { label: "編輯", icon: Pencil, onClick: () => onEdit(note), hidden: !canEdit },
+              { label: "刪除", icon: Trash2, onClick: () => onDelete(note), danger: true, hidden: !isAdmin },
+            ]} /></span>}
+          </header>
+          <p>{note.content}</p>
+          <footer>
+            <span>{note.author} · {note.createdAt}{note.editedAt && <em className="note-edited" title={`最後編輯：${note.editedAt}`}>（已編輯）</em>}</span>
+            <button type="button" className="row-text-button" disabled={busyId === note.id} onClick={() => resolve(note, !done)}>{done ? <><Undo2 size={14} />改回未處理</> : <><Check size={14} />標記已處理</>}</button>
+          </footer>
+          {done && <small className="note-resolved-by">{note.resolvedBy ?? "—"} 於 {note.resolvedAt} 處理</small>}
+        </article>;
+      })}</div>
+      {shown.length > visible.length && <div className="notes-more"><button type="button" className="secondary-button" onClick={() => setLimit(limit + NOTES_PAGE_SIZE)}>再顯示 {Math.min(NOTES_PAGE_SIZE, shown.length - visible.length)} 則（還有 {shown.length - visible.length} 則）</button></div>}
+    </>}
+  </>;
+}
 
 function Status({ status }: { status: PurchaseStatus }) {
   // 紅色只留給真正要注意的（低庫存、過期、急件）；待確認只是還沒處理，用中性色。
@@ -1804,7 +1940,7 @@ function ConfirmDeleteNoteModal({ note, onClose, onConfirm }: { note: HandoverNo
     if (deleteError) setError(deleteError); else onClose();
   };
 
-  return <ModalShell title="刪除交接留言" subtitle="此操作無法復原" onClose={onClose}>
+  return <ModalShell title="刪除交接留言" subtitle="刪除後可以馬上復原" onClose={onClose}>
     <p>確定要刪除這則留言嗎？</p>
     <div className="note-delete-preview"><Pill tone={note.important ? "red" : "sage"}>{note.category}</Pill><p>{note.content}</p><small>{note.author} · {note.createdAt}</small></div>
     {error && <div className="error-box">{error}</div>}
@@ -1857,8 +1993,28 @@ function StockCountModal({ item, onClose, onConfirm }: { item: InventoryItem; on
   </form></ModalShell>;
 }
 
-function NoteModal({ onClose, onSave }: { onClose: () => void; onSave: (n: NoteDraft) => Promise<string | void> }) {
-  const [category, setCategory] = useState<HandoverNote["category"]>("房務問題"); const [content, setContent] = useState(""); const [important, setImportant] = useState(false);
-  const [submitting, setSubmitting] = useState(false); const [error, setError] = useState("");
-  return <ModalShell title="新增交接留言" subtitle="重要事項請開啟標記，讓下一班人員優先看到" onClose={onClose}><form onSubmit={async (e) => { e.preventDefault(); if (!content.trim()) return; setSubmitting(true); setError(""); const saveError = await onSave({ category, content: content.trim(), important }); setSubmitting(false); if (saveError) setError(saveError); }}><label>分類<select value={category} onChange={(e) => setCategory(e.target.value as HandoverNote["category"])}><option>客人需求</option><option>房務問題</option><option>設備維修</option><option>餐飲</option><option>重要公告</option></select></label><label>留言內容<textarea required value={content} onChange={(e) => setContent(e.target.value)} placeholder="請清楚寫下需要接續處理的事情" /></label><label className="check-label"><input type="checkbox" checked={important} onChange={(e) => setImportant(e.target.checked)} />標記為重要事項</label>{error && <div className="error-box">{error}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={submitting}>{submitting ? "送出中…" : "新增留言"}</button></div></form></ModalShell>;
+function NoteModal({ note, onClose, onSave }: { note?: HandoverNote; onClose: () => void; onSave: (n: NoteDraft) => Promise<string | void> }) {
+  const [category, setCategory] = useState<HandoverNote["category"]>(note?.category ?? "房務問題");
+  const [content, setContent] = useState(note?.content ?? "");
+  const [important, setImportant] = useState(note?.important ?? false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [askDiscard, setAskDiscard] = useState(false);
+  const editing = Boolean(note);
+  // 有寫了東西、還沒送出就要關：先問一次，不要默默丟掉草稿。
+  const dirty = note ? content !== note.content || category !== note.category || important !== note.important : content.trim() !== "";
+  // 送出中不能關：關了的話，萬一失敗草稿和錯誤訊息都會跟著消失。
+  const tryClose = () => { if (submitting) return; if (dirty) setAskDiscard(true); else onClose(); };
+  return <ModalShell title={editing ? "編輯交接留言" : "新增交接留言"} subtitle={editing ? "修改後會顯示「已編輯」，其他人看得到" : "重要事項請開啟標記，讓下一班人員優先看到"} onClose={tryClose}>
+    <form onSubmit={async (e) => { e.preventDefault(); if (!content.trim()) return; setSubmitting(true); setError(""); setAskDiscard(false); const saveError = await onSave({ category, content: content.trim(), important }); setSubmitting(false); if (saveError) setError(saveError); }}>
+      <label>分類<select value={category} onChange={(e) => setCategory(e.target.value as HandoverNote["category"])}>{NOTE_CATEGORY_OPTIONS.map((c) => <option key={c}>{c}</option>)}</select></label>
+      <label>留言內容<textarea required maxLength={2000} value={content} onChange={(e) => setContent(e.target.value)} placeholder="請清楚寫下需要接續處理的事情" autoFocus /><small className="field-hint">{content.length} / 2000</small></label>
+      <label className="check-label"><input type="checkbox" checked={important} onChange={(e) => setImportant(e.target.checked)} />標記為重要事項</label>
+      <p className="field-hint">「重要」會讓留言排在最上面並標紅，處理完才會收起來；「重要公告」只是分類，用來放給全員的通知。</p>
+      {error && <div className="error-box">{error}</div>}
+      {askDiscard
+        ? <div className="warning-box discard-ask"><span>這則留言還沒送出，確定要放棄嗎？</span><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setAskDiscard(false)}>繼續編輯</button><button type="button" className="secondary-button" onClick={onClose}>放棄</button></div></div>
+        : <div className="modal-actions"><button type="button" className="secondary-button" onClick={tryClose}>取消</button><button className="primary-button" disabled={submitting || !content.trim() || (editing && !dirty)} title={editing && !dirty ? "還沒有修改任何內容" : undefined}>{submitting ? "送出中…" : editing ? "儲存修改" : "新增留言"}</button></div>}
+    </form>
+  </ModalShell>;
 }

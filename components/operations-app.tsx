@@ -656,7 +656,7 @@ export function OperationsApp() {
             onBulkStocktake={bulkStocktake}
           />}
           {view === "purchases" && <PurchasesView requests={purchases} loading={session.configured && purchasesState.loading} loadError={session.configured ? purchasesState.error : ""} onRetry={() => { void purchasesState.refresh(); }} canAdvance={role === "admin" || role === "purchaser" || !session.configured} currentUserId={session.configured ? session.userId : null} inventory={activeInventory} notice={purchaseNotice} onDismissNotice={() => setPurchaseNotice("")} highlightId={highlightPurchaseId} onAdvance={advancePurchase} onSetPriority={setPurchasePriority} onEdit={editPurchase} onNew={() => openPurchaseModal()} onRequestAgain={(name) => openPurchaseModal(name)} onGoReceipts={() => openView("receipts")} />}
-          {view === "receipts" && <ReceiptScanner inventory={activeInventory} categories={activeCategoryNames} receipts={receipts} retentionDays={retentionDays} onConfirm={async (record) => {
+          {view === "receipts" && <ReceiptScanner inventory={activeInventory} categories={activeCategoryNames} receipts={receipts} retentionDays={retentionDays} canCreateItems={canManageItems || !session.configured} draftOwner={session.configured ? (session.userId ?? "") : "demo"} onConfirm={async (record) => {
             // 新品項建立、庫存數量與異動紀錄都已經在Supabase交易（RPC）內原子性完成，這裡只需要重新整理庫存與進貨單列表。
             await inventoryState.refresh();
             if (session.configured) await receiptsState.refresh(true);

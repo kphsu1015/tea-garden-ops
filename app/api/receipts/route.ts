@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
-import { isDateKey, roundQuantity } from "@/lib/inventory";
+import { roundQuantity } from "@/lib/inventory";
+// 嚴格的日期檢查：2026-02-30 這種不存在的日子也要擋（寬鬆的檢查會放行，到資料庫才失敗變成 500）。
+import { isDateKey } from "@/lib/movement-log";
 import { getReceiptRetentionDays, mapReceiptRow, RECEIPT_SELECT_COLUMNS } from "@/lib/shared-records";
 import { requireStaffSession } from "@/lib/staff-auth";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
+
+// ilike 的萬用字元（% _ \）當成一般文字。
+const likeLiteral = (value: string) => value.replace(/[\\%_]/g, (c) => `\\${c}`);
 
 // 最近的進貨單（含品項明細與非庫存費用）。所有在職員工讀到同一份（RLS：is_active_staff）。
 export async function GET() {
@@ -83,6 +88,8 @@ export async function POST(request: Request) {
       warnings?: string[];
       lines?: ReceiptLineInput[];
       charges?: ReceiptChargeInput[];
+      // 使用者已經看過「可能重複」的提醒並確認不是重複，才會帶這個；沒帶的話，查到重複就先回 409 請使用者確認。
+      confirmDuplicate?: boolean;
     };
 
     if (!body.originalFileName) return NextResponse.json({ error: "缺少檔案名稱。" }, { status: 400 });
@@ -101,6 +108,11 @@ export async function POST(request: Request) {
     // 進貨單一定要有金額才能送出，不管是AI辨識還是手動輸入。
     if (typeof body.totalAmount !== "number" || !(body.totalAmount > 0)) {
       return NextResponse.json({ error: "請填寫單據總額（必須大於0）。" }, { status: 400 });
+    }
+
+    // 進貨日期一定要有：進貨報表依進貨日期分月，沒有日期的單入庫了庫存，卻不會出現在任何月份的報表裡。
+    if (!body.purchaseDate || !isDateKey(body.purchaseDate)) {
+      return NextResponse.json({ error: "請填寫正確的進貨日期（進貨報表依這個日期分月統計）。" }, { status: 400 });
     }
 
     for (const line of lines) {
@@ -138,6 +150,32 @@ export async function POST(request: Request) {
       }
       if (typeof charge.amount !== "number" || !Number.isFinite(charge.amount) || charge.amount < 0) {
         return NextResponse.json({ error: "費用金額必須是不小於0的數字。" }, { status: 400 });
+      }
+    }
+
+    // 重複輸入同一張進貨單，庫存會加兩次。前端只比對得到最近 50 筆，這裡在資料庫整張表查一次：
+    // 單據號碼一樣，或同一天、同供應商、同總額，就先回 409，等使用者確認不是重複再重送。
+    if (!body.confirmDuplicate) {
+      const invoice = body.invoiceNumber?.trim();
+      const supplier = body.supplier?.trim();
+      let hit: { supplier: string | null; purchase_date: string | null; invoice_number: string | null } | null = null;
+      let reason: "invoice" | "same" | null = null;
+      if (invoice) {
+        const { data: byInvoice, error: invoiceError } = await supabase.from("receipts").select("supplier,purchase_date,invoice_number").neq("status", "deleted").ilike("invoice_number", likeLiteral(invoice)).limit(1);
+        if (invoiceError) throw invoiceError;
+        if (byInvoice && byInvoice.length > 0) { hit = byInvoice[0]; reason = "invoice"; }
+      }
+      if (!hit && supplier) {
+        const { data: bySame, error: sameError } = await supabase.from("receipts").select("supplier,purchase_date,invoice_number").neq("status", "deleted").eq("purchase_date", body.purchaseDate).eq("total_amount", body.totalAmount).ilike("supplier", likeLiteral(supplier)).limit(1);
+        if (sameError) throw sameError;
+        if (bySame && bySame.length > 0) { hit = bySame[0]; reason = "same"; }
+      }
+      if (hit) {
+        const who = hit.supplier || "未填供應商";
+        const message = reason === "invoice"
+          ? `單據號碼 ${hit.invoice_number} 已經輸入過：${who}、${hit.purchase_date ?? "日期未填"}。`
+          : `${hit.purchase_date} 同一家供應商「${who}」、同樣金額的進貨單已經輸入過。`;
+        return NextResponse.json({ error: message, duplicate: true }, { status: 409 });
       }
     }
 

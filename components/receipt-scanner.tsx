@@ -2,7 +2,7 @@
 
 import { Camera, Check, ChevronDown, ChevronUp, FileImage, LoaderCircle, Plus, ScanLine, ShieldCheck, Undo2, Upload, X } from "lucide-react";
 import Image from "next/image";
-import { useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { compressImage } from "@/lib/compress-image";
 import { PENDING_CATEGORY } from "@/lib/categories-shared";
 import { formatNumber } from "@/lib/format";
@@ -10,6 +10,8 @@ import { generateId } from "@/lib/id";
 import { findExactInventoryMatch, findSimilarInventoryItems, normalizeItemName, roundQuantity } from "@/lib/inventory";
 import { formatCurrency } from "@/lib/purchase-report";
 import { calculateAmountMismatch, calculateReceiptTotals, deriveChargeAmountFromLine, splitAnalysisLines, type RawAnalysisLine } from "@/lib/receipt-calc";
+import { clearDraft, draftAgeLabel, loadDraft, saveDraft, type StoredDraft } from "@/lib/receipt-draft";
+import { describeDuplicate, findDuplicateReceipt } from "@/lib/receipt-duplicates";
 import { createClient } from "@/lib/supabase/client";
 import type { InventoryItem, ReceiptCharge, ReceiptChargeType, ReceiptLine, ReceiptRecord, UsagePeriod } from "@/lib/types";
 
@@ -131,11 +133,15 @@ function rawLineToWorkingCharge(line: RawAnalysisLine): WorkingCharge {
   };
 }
 
-export function ReceiptScanner({ inventory, categories, receipts, retentionDays, onConfirm }: {
+export function ReceiptScanner({ inventory, categories, receipts, retentionDays, canCreateItems, draftOwner, onConfirm }: {
   inventory: InventoryItem[];
   categories: string[];
   receipts: ReceiptRecord[];
   retentionDays: number;
+  // 只有管理員與訂貨管家可以建立新庫存品項；管家只能對應現有品項或忽略（資料庫也是這樣擋）。
+  canCreateItems: boolean;
+  // 草稿依帳號分開存（共用一台裝置換人登入時，看不到前一個人的內容）；示範模式用固定的 "demo"。
+  draftOwner: string;
   onConfirm: (record: ReceiptRecord) => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -159,7 +165,47 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
 
   const [lastRemoved, setLastRemoved] = useState<{ kind: "line"; line: WorkingLine; index: number } | { kind: "charge"; charge: WorkingCharge; index: number } | null>(null);
 
-  const resetEntry = () => { setFile(null); setPreview(""); setCompressedBlob(null); setAnalysis(null); setError(""); setCollapsed(new Set()); setLastRemoved(null); };
+  // 這張單可能跟「最近進貨單」重複：使用者確認過「不是重複」之後，才能入庫。
+  const [ackedDuplicateId, setAckedDuplicateId] = useState<string | null>(null);
+  // 還沒送出的草稿（換頁、重新整理、手機切 App 之後回來還在）：只存在這台裝置，照片不存。
+  const [draftOffer, setDraftOffer] = useState<StoredDraft<WorkingAnalysis> | null>(null);
+  // 已經上傳到儲存空間、但進貨單還沒寫進資料庫的照片：入庫失敗重試時直接沿用同一個路徑，不重複上傳。
+  // 故意不在放棄時自動刪除：入庫其實成功、只是回應遺失的情況下，自動刪會誤刪正式單據的照片，比留一張孤兒更糟。
+  const uploadedRef = useRef<{ blob: Blob; path: string } | null>(null);
+  const forgetUploadedPhoto = () => { uploadedRef.current = null; };
+  // 伺服器在整張表查到可能重複（前端只看得到最近 50 筆）：記下當時填的內容，內容改了就不再算。
+  const [serverDuplicate, setServerDuplicate] = useState<{ key: string; message: string } | null>(null);
+
+  const resetEntry = () => { forgetUploadedPhoto(); clearDraft(draftOwner); setDraftOffer(null); setFile(null); setPreview(""); setCompressedBlob(null); setAnalysis(null); setError(""); setCollapsed(new Set()); setLastRemoved(null); setAckedDuplicateId(null); setServerDuplicate(null); };
+  useEffect(() => {
+    const timer = window.setTimeout(() => { setDraftOffer(loadDraft<WorkingAnalysis>(draftOwner)); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [draftOwner]);
+  useEffect(() => {
+    if (!analysis) return;
+    const timer = window.setTimeout(() => { saveDraft(draftOwner, { mode, hadPhoto: Boolean(file), analysis }); }, 600);
+    return () => window.clearTimeout(timer);
+  }, [analysis, mode, file, draftOwner]);
+  // 填了東西、還沒入庫時，關分頁或重新整理前先問一次。
+  const dirtyEntry = Boolean(analysis && (analysis.lines.length > 0 || analysis.charges.length > 0 || analysis.supplier.trim() || analysis.totalAmount));
+  useEffect(() => {
+    if (!dirtyEntry) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirtyEntry]);
+  const restoreDraft = () => {
+    if (!draftOffer) return;
+    // 草稿不含照片：接續填寫前先清掉目前選的照片，不能把舊單內容配上新照片。
+    forgetUploadedPhoto(); setFile(null); setPreview(""); setCompressedBlob(null);
+    // 草稿是以前存的，現在這個帳號可能沒有「建立新品項」的權限：不允許的動作改回待對應，不能直接當成已完成。
+    const restored: WorkingAnalysis = { ...draftOffer.analysis, lines: draftOffer.analysis.lines.map((l) => !canCreateItems && l.action === "create_new" ? { ...l, action: null } : l) };
+    setMode(draftOffer.mode);
+    setAnalysis(restored);
+    setCollapsed(new Set(restored.lines.filter(isLineResolved).map((l) => l.id)));
+    setSavedNotice(null); setError(""); setDraftOffer(null); setAckedDuplicateId(null); setServerDuplicate(null);
+  };
+  const discardDraft = () => { clearDraft(draftOwner); setDraftOffer(null); };
   const hasEntryContent = Boolean(preview || analysis);
   const applyMode = (next: "scan" | "manual") => { setPendingMode(null); setMode(next); resetEntry(); };
   const switchMode = (next: "scan" | "manual") => {
@@ -170,6 +216,7 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
 
   const chooseFile = async (next: File | undefined) => {
     if (!next) return;
+    forgetUploadedPhoto();
     setError("");
     setSavedNotice(null);
     setAnalysis(null);
@@ -334,7 +381,15 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
   const hasTotalAmount = Boolean(analysis && typeof analysis.totalAmount === "number" && analysis.totalAmount > 0);
   // 品項金額可以是0（贈品），但不能是負數或不是數字；打錯時保留原本輸入，在「還差什麼」提醒，不偷偷改成0。
   const badAmountLines = analysis ? analysis.lines.filter((l) => l.action !== "ignore" && l.totalPrice !== undefined && !(Number.isFinite(l.totalPrice) && l.totalPrice >= 0)) : [];
-  const allResolved = hasAnyRow && allLinesResolved && chargesValid && hasTotalAmount && badAmountLines.length === 0;
+  // 進貨日期一定要有：進貨報表依進貨日期分月，沒有日期的單入了庫存，卻不會出現在任何月份的報表裡。
+  const hasPurchaseDate = Boolean(analysis && analysis.purchaseDate);
+  const duplicate = analysis ? findDuplicateReceipt(receipts, { invoiceNumber: analysis.invoiceNumber, purchaseDate: analysis.purchaseDate, supplier: analysis.supplier, totalAmount: analysis.totalAmount }) : null;
+  const currentKey = analysis ? `${analysis.invoiceNumber}|${analysis.purchaseDate}|${analysis.supplier}|${analysis.totalAmount}` : "";
+  const serverHit = serverDuplicate && serverDuplicate.key === currentKey ? serverDuplicate : null;
+  const duplicateId = duplicate ? duplicate.receipt.id : serverHit ? "server" : null;
+  const duplicateMessage = duplicate ? describeDuplicate(duplicate) : serverHit ? serverHit.message : "";
+  const duplicateOk = !duplicateId || ackedDuplicateId === duplicateId;
+  const allResolved = hasAnyRow && allLinesResolved && chargesValid && hasTotalAmount && hasPurchaseDate && duplicateOk && badAmountLines.length === 0;
 
   // 入庫按鈕旁的「還差什麼」清單：按鈕變灰時直接寫出原因，點一下跳到要補的地方（手機、平板沒有滑鼠提示也看得到）。
   const unresolvedLines = analysis ? analysis.lines.filter((line) => !isLineResolved(line)) : [];
@@ -368,6 +423,8 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
     if (badAmountLines.length > 0) missing.push({ key: "amounts", label: `${badAmountLines.length} 個品項金額不能是負數`, target: `receipt-line-${badAmountLines[0].id}`, focus: "[data-field=amount]" });
     if (invalidCharges.length > 0) missing.push({ key: "charges", label: `${invalidCharges.length} 筆費用金額不正確`, target: `receipt-charge-${invalidCharges[0].id}`, focus: "input[type=number]" });
     if (!hasTotalAmount) missing.push({ key: "total", label: "單據總額未填（必須大於0）", target: "receipt-total" });
+    if (!hasPurchaseDate) missing.push({ key: "date", label: "進貨日期未填（報表依這個日期分月）", target: "receipt-date" });
+    if (!duplicateOk) missing.push({ key: "dup", label: "這張單可能重複輸入過，請確認不是重複", target: "receipt-duplicate" });
   }
   const jumpTo = (id: string, focus?: string) => {
     const el = document.getElementById(id);
@@ -391,9 +448,15 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
 
         // 手動輸入沒有照片可上傳，storagePath留空即可，後端已改成可以不帶照片保存進貨單。
         if (compressedBlob) {
-          storagePath = `${user.id}/${generateId()}.jpg`;
-          const { error: uploadError } = await supabase.storage.from("receipts").upload(storagePath, compressedBlob, { contentType: "image/jpeg", upsert: false });
-          if (uploadError) throw new Error(`照片保存失敗：${uploadError.message}`);
+          // 上一次入庫失敗時照片已經上傳了：沿用同一個路徑，不再多傳一張。
+          if (uploadedRef.current && uploadedRef.current.blob === compressedBlob) {
+            storagePath = uploadedRef.current.path;
+          } else {
+            storagePath = `${user.id}/${generateId()}.jpg`;
+            const { error: uploadError } = await supabase.storage.from("receipts").upload(storagePath, compressedBlob, { contentType: "image/jpeg", upsert: false });
+            if (uploadError) throw new Error(`照片保存失敗：${uploadError.message}`);
+            uploadedRef.current = { blob: compressedBlob, path: storagePath };
+          }
         }
 
         const response = await fetch("/api/receipts", {
@@ -404,6 +467,7 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
             purchaseDate: analysis.purchaseDate || undefined,
             invoiceNumber: analysis.invoiceNumber || undefined,
             totalAmount: analysis.totalAmount,
+            confirmDuplicate: Boolean(duplicateId && ackedDuplicateId === duplicateId),
             originalFileName: file?.name || "手動輸入進貨單",
             storagePath,
             warnings: analysis.warnings,
@@ -434,9 +498,16 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
             })),
           }),
         });
-        const result = await response.json() as { id?: string; error?: string };
+        const result = await response.json() as { id?: string; error?: string; duplicate?: boolean };
+        // 伺服器在整張表查到可能重複：不是錯誤，顯示提醒請使用者確認後再按一次入庫（照片已上傳，重送會沿用）。
+        if (response.status === 409 && result.duplicate) {
+          setServerDuplicate({ key: currentKey, message: result.error || "可能已經輸入過同一張進貨單。" });
+          return;
+        }
         if (!response.ok || result.error) throw new Error(result.error || "進貨單保存失敗");
         persisted = true;
+        // 進貨單已經寫進資料庫，照片有單據指向了，不能再被當成孤兒清掉。
+        uploadedRef.current = null;
       }
       const createdAt = new Date();
       const deleteAfter = storagePath ? new Date(createdAt.getTime() + retentionDays * 86400000).toISOString() : undefined;
@@ -493,6 +564,10 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
     <div className="section-header receipt-title"><div><h1>新增進貨單</h1><p>拍照AI辨識，或直接手動輸入，確認內容後一次完成入庫。</p></div><span className="privacy-badge"><ShieldCheck size={18} />私人照片 · 保存{retentionDays}天</span></div>
     <div className="receipt-layout">
       <section className="upload-card">
+        {draftOffer && !analysis && !preview && <div className="draft-offer" role="status">
+          <p><strong>有一張還沒送出的進貨單草稿</strong>（{draftAgeLabel(draftOffer.savedAt)}・{draftOffer.analysis.supplier || "未填供應商"}・{draftOffer.analysis.lines.length} 項）。{draftOffer.hadPhoto ? "照片沒有保留，接續填寫時不會附照片。" : ""}</p>
+          <div><button type="button" className="primary-button" onClick={restoreDraft}>接續填寫</button><button type="button" className="secondary-button" onClick={discardDraft}>丟掉草稿</button></div>
+        </div>}
         <div className="mode-toggle">
           <button type="button" className={mode === "scan" ? "primary-button" : "secondary-button"} onClick={() => switchMode("scan")}><ScanLine size={16} />拍照辨識</button>
           <button type="button" className={mode === "manual" ? "primary-button" : "secondary-button"} onClick={() => switchMode("manual")}><FileImage size={16} />手動輸入</button>
@@ -520,12 +595,13 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
         </div>}
         {!analysis ? <div className="analysis-empty"><FileImage size={42} /><strong>{mode === "manual" ? "手動輸入的進貨單內容會顯示在這裡" : "辨識結果會顯示在這裡"}</strong><p>系統不會自動入庫，請先確認品項、數量與單位。</p></div> : <>
           <header><div><h2>{mode === "manual" ? "填寫進貨單內容" : "確認辨識結果"}</h2><p>{mode === "manual" ? "手動填寫供應商、品項與費用" : "可直接修改AI辨識錯誤的欄位"}</p></div><span>{analysis.lines.length}項庫存 · {analysis.charges.length}筆費用</span></header>
-          <div className="receipt-meta"><label>供應商<input value={analysis.supplier} onChange={(e) => setAnalysis({ ...analysis, supplier: e.target.value })} /></label><label>進貨日期<input type="date" value={analysis.purchaseDate} onChange={(e) => setAnalysis({ ...analysis, purchaseDate: e.target.value })} /></label><label>單據號碼<input value={analysis.invoiceNumber || ""} onChange={(e) => setAnalysis({ ...analysis, invoiceNumber: e.target.value })} /></label><label>單據總額（必填）<input id="receipt-total" required type="number" min="0" step="0.01" value={analysis.totalAmount ?? ""} onChange={(e) => setAnalysis({ ...analysis, totalAmount: Number(e.target.value) || undefined })} /></label></div>
+          <div className="receipt-meta"><label>供應商<input value={analysis.supplier} onChange={(e) => setAnalysis({ ...analysis, supplier: e.target.value })} /></label><label>進貨日期（必填）<input id="receipt-date" required type="date" value={analysis.purchaseDate} onChange={(e) => setAnalysis({ ...analysis, purchaseDate: e.target.value })} /><small className="field-hint">進貨報表依這個日期分月統計。</small></label><label>單據號碼<input value={analysis.invoiceNumber || ""} onChange={(e) => setAnalysis({ ...analysis, invoiceNumber: e.target.value })} /></label><label>單據總額（必填）<input id="receipt-total" required type="number" min="0" step="0.01" value={analysis.totalAmount ?? ""} onChange={(e) => setAnalysis({ ...analysis, totalAmount: Number(e.target.value) || undefined })} /></label></div>
           {analysis.warnings.length > 0 && <div className="warning-box">{analysis.warnings.map((warning) => <span key={warning}>• {warning}</span>)}</div>}
 
-          <div className="receipt-section-heading" id="receipt-lines-heading"><h3>庫存品項（{analysis.lines.length}）</h3><div className="receipt-section-actions"><button type="button" className="secondary-button" onClick={addExistingLine}><Plus size={14} />選擇現有品項</button><button type="button" className="secondary-button" onClick={addLine}><Plus size={14} />手動新增品項</button></div></div>
-          {(unresolvedLines.length >= 2 || resolvedCount > 0) && <div className="receipt-bulk-actions">
-            {unresolvedLines.length >= 2 && <button type="button" className="text-button" onClick={createAllUnresolved}><Plus size={14} />未對應的 {unresolvedLines.length} 項都建立新庫存品項</button>}
+          <div className="receipt-section-heading" id="receipt-lines-heading"><h3>庫存品項（{analysis.lines.length}）</h3><div className="receipt-section-actions"><button type="button" className="secondary-button" onClick={addExistingLine}><Plus size={14} />選擇現有品項</button>{canCreateItems && <button type="button" className="secondary-button" onClick={addLine}><Plus size={14} />手動新增品項</button>}</div></div>
+          {!canCreateItems && <p className="receipt-section-note">你的帳號只能對應「現有庫存品項」或忽略；庫存裡還沒有的新品項，請管理員或訂貨管家先建立。</p>}
+          {((canCreateItems && unresolvedLines.length >= 2) || resolvedCount > 0) && <div className="receipt-bulk-actions">
+            {canCreateItems && unresolvedLines.length >= 2 && <button type="button" className="text-button" onClick={createAllUnresolved}><Plus size={14} />未對應的 {unresolvedLines.length} 項都建立新庫存品項</button>}
             {expandedResolved > 0 && <button type="button" className="text-button" onClick={collapseResolved}><ChevronUp size={14} />收合已完成的 {expandedResolved} 項</button>}
             {collapsedCount > 0 && <button type="button" className="text-button" onClick={() => setCollapsed(new Set())}><ChevronDown size={14} />全部展開（{collapsedCount} 項）</button>}
           </div>}
@@ -545,7 +621,7 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
             {line.action === null && <ExistingItemPicker inventory={inventory} categories={categories} onUpdate={(patch) => updateLine(line.id, patch)} />}
             <div className="line-grid"><label>數量<input type="number" min="0.5" step="0.5" value={line.quantity} onChange={(e) => updateLine(line.id, { quantity: roundQuantity(Number(e.target.value)) })} /></label><label>單位<input value={line.unit} onChange={(e) => updateLine(line.id, { unit: e.target.value })} /></label><label>金額<input data-field="amount" type="number" min="0" value={line.totalPrice ?? ""} aria-invalid={line.totalPrice !== undefined && !(line.totalPrice >= 0)} onChange={(e) => updateLine(line.id, { totalPrice: e.target.value === "" ? undefined : Number(e.target.value) })} /></label></div>
             {line.action !== "ignore" && <label>有效期限（可不填，同品項不同日期請分開列）<input type="date" value={line.expiryDate ?? ""} onChange={(e) => updateLine(line.id, { expiryDate: e.target.value || undefined })} /></label>}
-            <ReceiptLineMatch line={line} inventory={inventory} categories={categories} onUpdate={(patch) => updateLine(line.id, patch)} onUpdateNewItem={(patch) => updateNewItem(line.id, patch)} />
+            <ReceiptLineMatch line={line} inventory={inventory} categories={categories} canCreateItems={canCreateItems} onUpdate={(patch) => updateLine(line.id, patch)} onUpdateNewItem={(patch) => updateNewItem(line.id, patch)} />
             <div className="line-footer-actions">
               <button type="button" className="text-button line-switch-button" onClick={() => moveLineToCharge(line.id)}>這其實是運費／其他費用，不是庫存品項</button>
               {isLineResolved(line) && <button type="button" className="text-button" onClick={() => setLineCollapsed(line.id, true)}>收合</button>}
@@ -578,6 +654,10 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
             <div className="receipt-calc-row receipt-calc-total"><span>＝ 計算總額</span><span>{formatCurrency(calculatedTotal)}</span></div>
           </div>
 
+          {duplicateId && <div className="warning-box receipt-duplicate" id="receipt-duplicate" role="alert">
+            <span>• 這張單可能已經入庫過：{duplicateMessage}重複入庫會讓庫存加兩次。</span>
+            <label className="check-label"><input type="checkbox" checked={ackedDuplicateId === duplicateId} onChange={(e) => setAckedDuplicateId(e.target.checked ? duplicateId : null)} />我確認這不是重複的進貨單</label>
+          </div>}
           {error && <div className="error-box receipt-submit-error" role="alert"><strong>入庫沒有完成：</strong>{error}<span>內容都還在，修正後可以再按一次「確認並完成入庫」。</span></div>}
           {missing.length > 0 && <div className="receipt-missing" aria-live="polite">
             <small>還差這些才能入庫：</small>
@@ -588,8 +668,64 @@ export function ReceiptScanner({ inventory, categories, receipts, retentionDays,
       </section>
     </div>
 
-    <section className="receipt-history"><h2>最近進貨單</h2>{receipts.length === 0 ? <p>尚無進貨單紀錄</p> : <div className="table-card"><table><thead><tr><th>上傳時間</th><th>供應商</th><th>檔案</th><th>品項</th><th>金額</th><th>照片保存至</th><th>狀態</th></tr></thead><tbody>{receipts.map((receipt) => <tr key={receipt.id}><td>{new Date(receipt.createdAt).toLocaleString("zh-TW")}</td><td>{receipt.supplier || "未辨識"}</td><td>{receipt.fileName}</td><td>{receipt.lines.length}項{(receipt.charges?.length ?? 0) > 0 ? `＋${receipt.charges.length}筆費用` : ""}</td><td>{formatCurrency(receipt.totalAmount)}</td><td>{receipt.deleteAfter ? new Date(receipt.deleteAfter).toLocaleDateString("zh-TW") : "—"}</td><td><span className="pill">{receipt.status}</span></td></tr>)}</tbody></table></div>}</section>
+    <ReceiptHistory receipts={receipts} />
   </>;
+}
+
+// 最近進貨單：可以展開看每一張的品項與費用明細，也能打開當時拍的照片（照片還在保存期限內才有）。
+function ReceiptHistory({ receipts }: { receipts: ReceiptRecord[] }) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [photoState, setPhotoState] = useState<{ id: string; message: string } | null>(null);
+  const [photoBusyId, setPhotoBusyId] = useState<string | null>(null);
+  // 現在時間（判斷照片是否已過保存期限）：不能在渲染時直接呼叫 Date.now()，開頁後再取一次。
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setNow(Date.now()), 0);
+    return () => window.clearTimeout(timer);
+  }, [receipts]);
+
+  const viewPhoto = async (receipt: ReceiptRecord) => {
+    if (!receipt.storagePath) return;
+    setPhotoBusyId(receipt.id); setPhotoState(null);
+    try {
+      if (!process.env.NEXT_PUBLIC_SUPABASE_URL) throw new Error("示範模式沒有保存照片。");
+      const { data, error } = await createClient().storage.from("receipts").createSignedUrl(receipt.storagePath, 120);
+      if (error || !data?.signedUrl) throw new Error("照片已經超過保存期限被清掉了，或你沒有權限查看。");
+      window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+    } catch (reason) {
+      setPhotoState({ id: receipt.id, message: reason instanceof Error ? reason.message : "打不開照片，請稍後再試。" });
+    } finally {
+      setPhotoBusyId(null);
+    }
+  };
+
+  return <section className="receipt-history"><h2>最近進貨單</h2>{receipts.length === 0 ? <p>尚無進貨單紀錄</p> : <div className="table-card"><table className="receipt-history-table"><thead><tr><th>進貨日期</th><th>供應商</th><th>品項</th><th>金額</th><th>輸入時間</th><th>照片保存至</th><th>狀態</th><th>明細</th></tr></thead><tbody>{receipts.map((receipt) => {
+    const open = openId === receipt.id;
+    const photoAvailable = Boolean(receipt.storagePath) && !(now > 0 && receipt.deleteAfter && new Date(receipt.deleteAfter).getTime() < now);
+    return <Fragment key={receipt.id}>
+      <tr>
+        <td data-label="進貨日期">{receipt.purchaseDate || <span className="danger-text">沒填日期</span>}</td>
+        <td data-label="供應商"><strong>{receipt.supplier || "未填供應商"}</strong>{receipt.invoiceNumber && <small>單據 {receipt.invoiceNumber}</small>}</td>
+        <td data-label="品項">{receipt.lines.length}項{(receipt.charges?.length ?? 0) > 0 ? `＋${receipt.charges.length}筆費用` : ""}</td>
+        <td data-label="金額">{formatCurrency(receipt.totalAmount)}</td>
+        <td data-label="輸入時間">{new Date(receipt.createdAt).toLocaleString("zh-TW")}</td>
+        <td data-label="照片保存至">{receipt.deleteAfter ? new Date(receipt.deleteAfter).toLocaleDateString("zh-TW") : "沒有照片"}</td>
+        <td data-label="狀態"><span className="pill">{receipt.status}</span></td>
+        <td data-label="明細"><button type="button" className="row-text-button" aria-expanded={open} onClick={() => setOpenId(open ? null : receipt.id)}>{open ? <><ChevronUp size={14} />收起</> : <><ChevronDown size={14} />看明細</>}</button></td>
+      </tr>
+      {open && <tr className="receipt-detail-row"><td colSpan={8}>
+        <div className="receipt-detail">
+          {receipt.lines.length > 0 ? <table><thead><tr><th>品項</th><th>數量</th><th>單價</th><th>金額</th></tr></thead><tbody>{receipt.lines.map((line) => <tr key={line.id}><td>{line.itemName}</td><td>{formatNumber(line.quantity)} {line.unit}</td><td>{line.unitPrice !== undefined ? formatCurrency(line.unitPrice) : "—"}</td><td>{line.totalPrice !== undefined ? formatCurrency(line.totalPrice) : "—"}</td></tr>)}</tbody></table> : <p className="field-hint">這張單沒有庫存品項。</p>}
+          {(receipt.charges?.length ?? 0) > 0 && <ul className="receipt-detail-charges">{receipt.charges.map((c) => <li key={c.id}><span>{CHARGE_TYPE_LABELS[c.chargeType]}{c.description ? `：${c.description}` : ""}</span><b>{c.chargeType === "discount" ? "－" : "＋"}{formatCurrency(c.amount)}</b></li>)}</ul>}
+          <div className="receipt-detail-actions">
+            {photoAvailable ? <button type="button" className="secondary-button" disabled={photoBusyId === receipt.id} onClick={() => viewPhoto(receipt)}><FileImage size={15} />{photoBusyId === receipt.id ? "開啟中…" : "看照片"}</button> : <small className="field-hint">{receipt.storagePath ? "照片已超過保存期限，系統已清掉。" : "這張單是手動輸入的，沒有照片。"}</small>}
+            <small className="field-hint">要修改金額或刪除這張單，請到「進貨報表」（管理員）。</small>
+          </div>
+          {photoState?.id === receipt.id && <div className="error-box" role="alert">{photoState.message}</div>}
+        </div>
+      </td></tr>}
+    </Fragment>;
+  })}</tbody></table></div>}</section>;
 }
 
 // 收合後那一行的說明：對應到哪個現有品項／要建立的新品項分類／忽略。
@@ -602,10 +738,11 @@ function lineSummary(line: WorkingLine, inventory: InventoryItem[]): string {
   return "忽略，不更新庫存";
 }
 
-function ReceiptLineMatch({ line, inventory, categories, onUpdate, onUpdateNewItem }: {
+function ReceiptLineMatch({ line, inventory, categories, canCreateItems, onUpdate, onUpdateNewItem }: {
   line: WorkingLine;
   inventory: InventoryItem[];
   categories: string[];
+  canCreateItems: boolean;
   onUpdate: (patch: Partial<WorkingLine>) => void;
   onUpdateNewItem: (patch: Partial<NewItemDraft>) => void;
 }) {
@@ -646,13 +783,13 @@ function ReceiptLineMatch({ line, inventory, categories, onUpdate, onUpdateNewIt
 
   const similar = findSimilarInventoryItems(inventory, line.itemName, 5);
   return <div className="line-match line-match-unresolved">
-    <p className="line-match-hint">在上方選擇現有品項，或用下面其中一種方式處理：</p>
+    <p className="line-match-hint">{canCreateItems ? "在上方選擇現有品項，或用下面其中一種方式處理：" : "在上方選擇現有品項；如果庫存裡還沒有這個品項，先忽略它，請管理員或訂貨管家建立後再補入庫。"}</p>
     {similar.length > 0 && <div className="line-match-similar">
       <small>相似的現有品項：</small>
       <div className="line-match-similar-list">{similar.map((item) => <button type="button" key={item.id} onClick={() => onUpdate({ action: "existing", selectedExistingId: item.id })}>{item.name}<small>現有{formatNumber(item.quantity)}{item.unit}</small></button>)}</div>
     </div>}
     <div className="line-match-actions">
-      <button type="button" className="primary-button" onClick={() => onUpdate({ action: "create_new" })}><Plus size={15} />建立新庫存品項</button>
+      {canCreateItems && <button type="button" className="primary-button" onClick={() => onUpdate({ action: "create_new" })}><Plus size={15} />建立新庫存品項</button>}
       <button type="button" className="secondary-button" onClick={() => onUpdate({ action: "ignore" })}>忽略此品項</button>
     </div>
   </div>;

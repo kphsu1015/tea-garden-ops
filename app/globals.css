@@ -300,3 +300,45 @@ td .row-menu-list button small { display:inline;margin-top:0; }
 .discard-ask { display:grid;gap:10px; }
 @media(max-width:760px){ .notes-toolbar .stock-filter,.notes-toolbar select,.notes-toolbar .search-box { width:100%;max-width:none; } }
 .notes-page .row-text-button { display:inline-flex;flex-direction:row;align-items:center;gap:5px;white-space:nowrap; }
+
+/* 異動紀錄頁 */
+.movement-help { margin:0 0 14px;color:#5b6a65;font-size:13px; }
+.movement-help summary { cursor:pointer;font-weight:700;color:var(--forest);width:fit-content; }
+.movement-help dl { margin:10px 0 0;display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px 18px; }
+.movement-help dl>div { display:flex;align-items:center;gap:10px; }
+.movement-help dt,.movement-help dd { margin:0; }
+.movement-filters { display:grid;gap:10px;margin-bottom:12px; }
+.movement-range { display:flex;flex-wrap:wrap;align-items:center;gap:10px; }
+.date-field { display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--muted); }
+.date-field input { height:40px;border:1px solid var(--line);border-radius:10px;background:#fff;padding:0 10px;font:inherit;color:var(--ink); }
+.movement-filters .toolbar { flex-wrap:wrap;align-items:center;margin-bottom:0; }
+.movement-filters .toolbar>select { width:150px; }
+.movement-filters .search-box { flex:1 1 200px;max-width:280px; }
+.movement-item-picker { display:flex;flex-wrap:wrap;align-items:center;gap:8px; }
+.movement-item-picker input[type=search] { height:43px;width:190px;border:1px solid var(--line);border-radius:10px;background:#fff;padding:0 12px; }
+.movement-item-picker select { width:190px; }
+.movement-summary { display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px;font-size:13px;color:#5b6a65; }
+.movement-summary b { color:var(--ink); }
+.movement-summary .secondary-button { padding:7px 12px;font-size:13px; }
+.movement-table .day-row th { background:#f1ede3;color:#4b5a55;font-size:12.5px;font-weight:700;text-align:left;padding:8px 16px;letter-spacing:.02em; }
+.table-card.is-refreshing { opacity:.55;transition:opacity .15s; }
+@media(max-width:760px){
+  .movement-range .stock-filter { width:100%; }
+  .movement-range .date-field { flex:1 1 130px; }
+  .movement-range .date-field input { flex:1;min-width:0; }
+  .movement-filters .toolbar>select,.movement-item-picker,.movement-item-picker input[type=search],.movement-item-picker select,.movement-filters .search-box { width:100%;max-width:none; }
+  .movement-summary { flex-wrap:wrap; }
+  .movement-table { min-width:0; }
+  .movement-table thead { display:none; }
+  .movement-table,.movement-table tbody,.movement-table td { display:block; }
+  .movement-table tr { display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;padding:12px 15px;border-bottom:1px solid #eee9df; }
+  .movement-table tr.day-row { display:block;padding:0;border:0; }
+  .movement-table tr.day-row th { display:block; }
+  .movement-table td[data-label="時間"] { grid-column:1/-1;color:#5b6a65;font-size:12px; }
+  .movement-table td[data-label="時間"]::before { display:none; }
+  .movement-table td { padding:0;border:0; }
+  .movement-table td::before { content:attr(data-label);display:block;color:#5b6a65;font-size:11px;margin-bottom:3px; }
+  .movement-table td[data-label="品項"],.movement-table td[data-label="備註"] { grid-column:1/-1; }
+  .movement-table td[data-label="品項"]::before { display:none; }
+  .movement-table td[data-label="品項"] strong { font-size:15px; }
+}

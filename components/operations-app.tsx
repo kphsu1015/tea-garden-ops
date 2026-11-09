@@ -1,14 +1,15 @@
 "use client";
 
 import {
-  AlertTriangle, Archive, BarChart3, Bell, Box, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardCheck, ClipboardList, RefreshCw,
+  AlertTriangle, Archive, BarChart3, Bell, Box, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardCheck, Download, ClipboardList, RefreshCw,
   Clock3, Eye, EyeOff, FileScan, History, LogOut, Menu, MessageSquareText, Pencil, Plus, Power, Search, Settings,
   MoreHorizontal, PauseCircle, ShoppingCart, Trash2, Undo2, Users, X
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { initialNotes, initialPurchases } from "@/lib/demo-data";
 import { EXPIRY_WARNING_DAYS, estimatedRemainingLabel, expiryLabel, getExpiringBatches, getLowStockReason, isLargeStockDiff, lowStockReasonLabel, MOVEMENT_TYPE_DEFAULT_DIRECTION, MOVEMENT_TYPE_ENUM, MOVEMENT_TYPE_LABELS, periodFrequencyLabel, restoreCounts, roundQuantity, taipeiDateKey, type ExpiringBatch, type StocktakeCount } from "@/lib/inventory";
 import type { StockMovementRecord } from "@/lib/movements";
+import { balancesAfter, dayLabel, detectPreset, formatMovementTime, groupByDay, movementsToCsv, presetRange } from "@/lib/movement-log";
 import { formatNumber, formatSignedNumber, formatTaipeiDateLabel, getTaipeiHour, greetingForHour } from "@/lib/format";
 import { generateId } from "@/lib/id";
 import { staffRoleLabel } from "@/lib/staff";
@@ -1522,49 +1523,199 @@ function PurchasesView({ requests, loading, loadError, canAdvance, onAdvance, on
 }
 
 // 異動歷史查詢：純讀取，資料來源是真實的stock_movements（新增進貨單、盤點、新增異動都會寫進同一張表）。
+type MovementFilters = { itemId: string; type: MovementType | ""; operatorId: string; from: string; to: string; q: string };
+type MovementOperator = { id: string; name: string; active: boolean };
+const EMPTY_MOVEMENT_FILTERS: MovementFilters = { itemId: "", type: "", operatorId: "", from: "", to: "", q: "" };
+const MOVEMENT_PAGE_SIZE = 50;
+const MOVEMENT_TYPE_HELP: Array<[MovementType, string]> = [
+  ["採購入庫", "進貨單確認入庫，或手動記錄的進貨"],
+  ["日常領用", "日常用掉的備品、飲品等"],
+  ["客房補充", "補到客房的備品"],
+  ["食材使用", "廚房做餐用掉的食材"],
+  ["損壞", "打破、壞掉不能用"],
+  ["過期報廢", "過期丟棄"],
+  ["盤點調整", "盤點後，把系統數量改成實際數量的差額"],
+];
+const movementTone = (label: string): "sage" | "gold" | "red" | "blue" | "neutral" =>
+  label === "採購入庫" ? "sage" : label === "盤點調整" ? "gold" : label === "損壞" || label === "過期報廢" ? "red" : "blue";
+
+function movementParams(f: MovementFilters, extra: Record<string, string> = {}): string {
+  const params = new URLSearchParams();
+  if (f.itemId) params.set("itemId", f.itemId);
+  if (f.type) params.set("movementType", MOVEMENT_TYPE_ENUM[f.type]);
+  if (f.operatorId) params.set("operatorId", f.operatorId);
+  if (f.from) params.set("from", f.from);
+  if (f.to) params.set("to", f.to);
+  if (f.q) params.set("q", f.q);
+  for (const [k, v] of Object.entries(extra)) params.set(k, v);
+  return params.toString();
+}
+
 function MovementLogView({ inventory }: { inventory: InventoryItem[] }) {
-  const [movements, setMovements] = useState<StockMovementRecord[]>([]);
+  const [filters, setFilters] = useState<MovementFilters>(EMPTY_MOVEMENT_FILTERS);
+  const [qInput, setQInput] = useState("");
+  const [itemSearch, setItemSearch] = useState("");
+  const [showInactive, setShowInactive] = useState(false);
+  const [rows, setRows] = useState<StockMovementRecord[]>([]);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  // 這批資料是用哪組篩選查出來的：篩選剛換、新資料還沒回來時，不拿舊資料去算「庫存剩」。
+  const [loadedKey, setLoadedKey] = useState("");
+  const [operators, setOperators] = useState<MovementOperator[]>([]);
+  const [itemQuantity, setItemQuantity] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const [moreError, setMoreError] = useState("");
   const [demo, setDemo] = useState(false);
-  const [itemId, setItemId] = useState("");
-  const [movementTypeLabel, setMovementTypeLabel] = useState<MovementType | "">("");
+  const [reloadTick, setReloadTick] = useState(0);
+  const [exporting, setExporting] = useState(false);
+  const [exportMessage, setExportMessage] = useState("");
+  const seq = useRef(0);
+  const todayKey = taipeiDateKey();
+  const rangeInvalid = Boolean(filters.from && filters.to && filters.from > filters.to);
 
+  // 備註關鍵字：停止輸入 0.35 秒後才查，不用每打一個字就送一次。
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const load = async () => {
-        setLoading(true);
-        setError("");
-        try {
-          const params = new URLSearchParams();
-          if (itemId) params.set("itemId", itemId);
-          if (movementTypeLabel) params.set("movementType", MOVEMENT_TYPE_ENUM[movementTypeLabel]);
-          const response = await fetch(`/api/inventory/movements?${params.toString()}`);
-          const data = await response.json() as { movements?: StockMovementRecord[]; demo?: boolean; error?: string };
-          if (!response.ok) throw new Error(data.error || "讀取異動紀錄失敗");
-          setMovements(data.movements || []);
-          setDemo(Boolean(data.demo));
-        } catch (reason) {
-          setError(reason instanceof Error ? reason.message : "讀取異動紀錄失敗，請稍後再試。");
-        } finally {
-          setLoading(false);
-        }
-      };
-      load();
-    }, 0);
+    const timer = window.setTimeout(() => setFilters((f) => f.q === qInput.trim() ? f : { ...f, q: qInput.trim() }), 350);
     return () => window.clearTimeout(timer);
-  }, [itemId, movementTypeLabel]);
+  }, [qInput]);
 
-  const movementTypeOptions = Object.keys(MOVEMENT_TYPE_ENUM) as MovementType[];
+  // 換篩選就從第一頁重查；舊請求晚回來的結果會被丟掉，不會蓋掉新結果。
+  useEffect(() => {
+    if (rangeInvalid) return;
+    const mine = ++seq.current;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setLoading(true); setError(""); setMoreError("");
+      try {
+        const response = await fetch(`/api/inventory/movements?${movementParams(filters, { limit: String(MOVEMENT_PAGE_SIZE) })}`, { signal: controller.signal });
+        const data = await response.json() as { movements?: StockMovementRecord[]; total?: number; hasMore?: boolean; operators?: MovementOperator[]; itemQuantity?: number | null; demo?: boolean; error?: string };
+        if (mine !== seq.current) return;
+        if (!response.ok) throw new Error(data.error || "讀取異動紀錄失敗");
+        setRows(data.movements || []);
+        setTotal(data.total ?? (data.movements || []).length);
+        setHasMore(Boolean(data.hasMore));
+        setLoadedKey(JSON.stringify(filters));
+        if (data.operators) setOperators(data.operators);
+        setItemQuantity(data.itemQuantity ?? null);
+        setDemo(Boolean(data.demo));
+      } catch (reason) {
+        if (mine !== seq.current || (reason instanceof DOMException && reason.name === "AbortError")) return;
+        setRows([]); setTotal(0); setHasMore(false); setLoadedKey("");
+        setError(reason instanceof Error ? reason.message : "讀取異動紀錄失敗，請稍後再試。");
+      } finally {
+        if (mine === seq.current) setLoading(false);
+      }
+    }, 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [filters, reloadTick, rangeInvalid]);
+
+  const loadMore = async () => {
+    const mine = seq.current;
+    const last = rows[rows.length - 1];
+    if (!last) return;
+    setLoadingMore(true); setMoreError("");
+    try {
+      // 用「上一筆的時間與 id」當游標往更早翻，翻頁期間有新異動寫進來也不會重複或漏掉。
+      const response = await fetch(`/api/inventory/movements?${movementParams(filters, { limit: String(MOVEMENT_PAGE_SIZE), beforeAt: last.createdAt, beforeId: last.id })}`);
+      const data = await response.json() as { movements?: StockMovementRecord[]; hasMore?: boolean; error?: string };
+      if (mine !== seq.current) return;
+      if (!response.ok) throw new Error(data.error || "讀取異動紀錄失敗");
+      setRows((current) => { const seen = new Set(current.map((r) => r.id)); return [...current, ...(data.movements || []).filter((r) => !seen.has(r.id))]; });
+      setHasMore(Boolean(data.hasMore));
+    } catch (reason) {
+      if (mine === seq.current) setMoreError(reason instanceof Error ? reason.message : "讀取失敗，請稍後再試。");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const exportCsv = async () => {
+    setExporting(true); setExportMessage("");
+    try {
+      const response = await fetch(`/api/inventory/movements?${movementParams(filters, { export: "1" })}`);
+      const data = await response.json() as { movements?: StockMovementRecord[]; total?: number; error?: string };
+      if (!response.ok) throw new Error(data.error || "匯出失敗");
+      const list = data.movements || [];
+      const blob = new Blob([movementsToCsv(list)], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url; link.download = `異動紀錄_${todayKey}.csv`;
+      document.body.appendChild(link); link.click(); link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setExportMessage(`已匯出 ${list.length} 筆${(data.total ?? 0) > list.length ? `（符合條件共 ${data.total} 筆，匯出最新的 ${list.length} 筆，請縮小日期範圍）` : ""}。`);
+    } catch (reason) {
+      setExportMessage(`匯出失敗：${reason instanceof Error ? reason.message : "請稍後再試。"}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const set = (patch: Partial<MovementFilters>) => setFilters((f) => ({ ...f, ...patch }));
+  const preset = detectPreset(filters.from, filters.to, todayKey);
+  const hasFilter = JSON.stringify(filters) !== JSON.stringify(EMPTY_MOVEMENT_FILTERS) || qInput !== "";
+  const clearFilters = () => { setFilters(EMPTY_MOVEMENT_FILTERS); setQInput(""); setItemSearch(""); };
+  const itemOptions = inventory
+    .filter((item) => item.id === filters.itemId || ((showInactive || item.active) && (!itemSearch.trim() || item.name.toLowerCase().includes(itemSearch.trim().toLowerCase()))))
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
+  // 單一品項、而且沒有截止日期／類型／操作人／備註篩選時，可以用「目前庫存」往回推每筆之後剩多少。
+  const showBalance = Boolean(filters.itemId) && !filters.to && !filters.type && !filters.operatorId && !filters.q && itemQuantity !== null && !loading && loadedKey === JSON.stringify(filters);
+  const balances = useMemo(() => showBalance ? balancesAfter(rows, itemQuantity as number) : null, [showBalance, rows, itemQuantity]);
+  const groups = useMemo(() => groupByDay(rows), [rows]);
+  const columns = showBalance ? 8 : 7;
 
   return <><PageHeader title="異動紀錄" subtitle="新增進貨單、盤點修正、新增異動，所有真正影響庫存數量的紀錄都會出現在這裡。" />
     {demo && <div className="warning-box"><span>• 尚未設定Supabase，無法顯示異動紀錄。</span></div>}
-    <div className="toolbar">
-      <select value={itemId} onChange={(e) => setItemId(e.target.value)}><option value="">全部品項</option>{inventory.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-      <select value={movementTypeLabel} onChange={(e) => setMovementTypeLabel(e.target.value as MovementType | "")}><option value="">全部類型</option>{movementTypeOptions.map((t) => <option key={t}>{t}</option>)}</select>
+    <details className="movement-help"><summary>各種異動類型的意思</summary>
+      <dl>{MOVEMENT_TYPE_HELP.map(([label, text]) => <div key={label}><dt><Pill tone={movementTone(label)}>{label}</Pill></dt><dd>{text}</dd></div>)}</dl>
+    </details>
+    <div className="movement-filters">
+      <div className="movement-range">
+        <div className="stock-filter" role="group" aria-label="日期範圍">
+          {([["all", "全部時間"], ["today", "今天"], ["7d", "近 7 天"], ["30d", "近 30 天"]] as const).map(([id, label]) => <button key={id} type="button" className={preset === id ? "active" : ""} aria-pressed={preset === id} onClick={() => set(presetRange(id, todayKey))}>{label}</button>)}
+        </div>
+        <label className="date-field">從<input type="date" value={filters.from} max={filters.to || undefined} onChange={(e) => set({ from: e.target.value })} /></label>
+        <label className="date-field">到<input type="date" value={filters.to} min={filters.from || undefined} onChange={(e) => set({ to: e.target.value })} /></label>
+      </div>
+      <div className="toolbar">
+        <div className="movement-item-picker">
+          <input type="search" placeholder="輸入品項名稱縮小選單" value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} aria-label="輸入品項名稱縮小品項選單" />
+          <select value={filters.itemId} onChange={(e) => set({ itemId: e.target.value })} aria-label="品項"><option value="">全部品項</option>{itemOptions.map((item) => <option key={item.id} value={item.id}>{item.name}{item.active ? "" : "（已停用）"}</option>)}</select>
+          <label className="inline-check"><input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />含已停用品項</label>
+        </div>
+        <select value={filters.type} onChange={(e) => set({ type: e.target.value as MovementType | "" })} aria-label="異動類型"><option value="">全部類型</option>{(Object.keys(MOVEMENT_TYPE_ENUM) as MovementType[]).map((t) => <option key={t}>{t}</option>)}</select>
+        <select value={filters.operatorId} onChange={(e) => set({ operatorId: e.target.value })} aria-label="操作人"><option value="">全部操作人</option>{operators.map((o) => <option key={o.id} value={o.id}>{o.name}{o.active ? "" : "（已停用）"}</option>)}</select>
+        <div className="search-box"><Search size={18} /><input placeholder="搜尋備註" value={qInput} onChange={(e) => setQInput(e.target.value)} aria-label="搜尋備註" /></div>
+        {hasFilter && <button type="button" className="text-button" onClick={clearFilters}><X size={14} />清除篩選</button>}
+      </div>
     </div>
-    {error && <div className="error-box">{error}</div>}
-    {loading ? <p>載入異動紀錄中…</p> : movements.length === 0 ? <div className="report-empty-state"><AlertTriangle size={28} /><strong>沒有符合條件的異動紀錄</strong><p>請調整篩選條件，或先到「庫存管理」新增異動／盤點。</p></div> : <div className="table-card"><table><thead><tr><th>時間</th><th>品項</th><th>異動類型</th><th>數量</th><th>批次到期日</th><th>操作人</th><th>備註</th></tr></thead><tbody>{movements.map((m) => <tr key={m.id}><td>{new Date(m.createdAt).toLocaleString("zh-TW")}</td><td><strong>{m.itemName}</strong></td><td>{m.movementType}</td><td><b className={m.quantityChange > 0 ? "positive-text" : "danger-text"}>{formatSignedNumber(m.quantityChange)} {m.unit}</b></td><td>{m.expiryDate || "—"}</td><td>{m.operatorName}</td><td>{m.note || "—"}</td></tr>)}</tbody></table></div>}
+    {rangeInvalid && <div className="error-box" role="alert">開始日期不能比結束日期晚，請重新選擇。</div>}
+    {error && <div className="error-box inventory-notice" role="alert"><span>{error}</span><button type="button" className="text-button" onClick={() => setReloadTick((n) => n + 1)}><RefreshCw size={14} />重新載入</button></div>}
+    {!error && !rangeInvalid && !demo && <div className="movement-summary" aria-live="polite">
+      <span>{loading && rows.length === 0 ? "載入中…" : <>共 <b>{total}</b> 筆{hasMore && <>，已顯示 {rows.length} 筆</>}{showBalance && <span className="field-hint">　（「庫存剩」是用目前庫存往回推算）</span>}</>}</span>
+      <button type="button" className="secondary-button" onClick={exportCsv} disabled={exporting || total === 0}><Download size={15} />{exporting ? "匯出中…" : "匯出 CSV"}</button>
+    </div>}
+    {exportMessage && <div className={exportMessage.startsWith("匯出失敗") ? "error-box inventory-notice" : "inventory-notice"} role="status"><span>{exportMessage}</span><button type="button" className="notice-close" aria-label="關閉提示" title="關閉提示" onClick={() => setExportMessage("")}><X size={14} /></button></div>}
+    {!error && !rangeInvalid && (loading && rows.length === 0
+      ? <p className="panel-empty">載入異動紀錄中…</p>
+      : rows.length === 0
+        ? <div className="report-empty-state"><AlertTriangle size={28} /><strong>{hasFilter ? "沒有符合條件的異動紀錄" : "還沒有異動紀錄"}</strong><p>{hasFilter ? "請調整篩選條件，或清除篩選看全部。" : "到「庫存管理」記錄異動、盤點，或建立進貨單入庫後，紀錄會出現在這裡。"}</p>{hasFilter && <button type="button" className="secondary-button" onClick={clearFilters}>清除篩選</button>}</div>
+        : <div className={loading ? "table-card is-refreshing" : "table-card"} aria-busy={loading}><table className="movement-table"><thead><tr><th>時間</th><th>品項</th><th>異動類型</th><th>數量</th>{showBalance && <th title="這筆異動之後的庫存（用目前庫存往回推算）">庫存剩</th>}<th>批次到期日</th><th>操作人</th><th>備註</th></tr></thead>
+          <tbody>{groups.map((g) => <Fragment key={g.key}><tr className="day-row"><th colSpan={columns} scope="colgroup">{dayLabel(g.key, todayKey)}</th></tr>{g.rows.map((m) => <tr key={m.id}>
+            <td data-label="時間">{formatMovementTime(m.createdAt)}</td>
+            <td data-label="品項"><strong>{m.itemName}</strong></td>
+            <td data-label="異動類型"><Pill tone={movementTone(m.movementType)}>{m.movementType}</Pill></td>
+            <td data-label="數量"><b className={m.quantityChange > 0 ? "positive-text" : "danger-text"}>{formatSignedNumber(m.quantityChange)} {m.unit}</b></td>
+            {showBalance && <td data-label="庫存剩">{balances?.get(m.id) == null ? <span className="field-hint" title="跟上一筆是同一次操作，操作完的庫存顯示在這組最上面那一筆">〃</span> : <>{formatNumber(balances.get(m.id))} {m.unit}</>}</td>}
+            <td data-label="批次到期日">{m.expiryDate || "—"}</td>
+            <td data-label="操作人">{m.operatorName}</td>
+            <td data-label="備註">{m.note || "—"}</td>
+          </tr>)}</Fragment>)}</tbody></table></div>)}
+    {!error && !rangeInvalid && !loading && rows.length > 0 && hasMore && <div className="notes-more">
+      {moreError && <div className="error-box" role="alert">{moreError}</div>}
+      <button type="button" className="secondary-button" onClick={loadMore} disabled={loadingMore}>{loadingMore ? "載入中…" : total > rows.length ? `再載入 ${Math.min(MOVEMENT_PAGE_SIZE, total - rows.length)} 筆（還有 ${total - rows.length} 筆更早的）` : "再載入更早的紀錄"}</button>
+    </div>}
   </>;
 }
 

@@ -33,7 +33,7 @@ npm run dev
 ## 正式Supabase設定
 
 1. 建立Supabase專案。
-2. 在SQL Editor依序執行 `supabase/schema.sql`，再執行 `supabase/migrations/0001_inventory_category_management.sql`（新增分類排序／啟用欄位並寫入預設分類）。之後依編號順序執行 `supabase/migrations/` 內其餘檔案（目前到 `0016_purchaser_reactivate_delete_items.sql`：訂貨管家也可以重新啟用與刪除品項；`0015` 盤點數量可輸入0.5；`0014` 把庫存改成依有效期限分批，既有庫存會自動轉成一批）。
+2. 在SQL Editor依序執行 `supabase/schema.sql`，再執行 `supabase/migrations/0001_inventory_category_management.sql`（新增分類排序／啟用欄位並寫入預設分類）。之後依編號順序執行 `supabase/migrations/` 內其餘檔案（目前到 `0021_requester_edit_own_purchase.sql`，一個都不能跳過）。最近幾支做的事：`0021` 提出採購需求的人可以修改或撤回自己提出、還在待確認的需求；`0020` 分類改名會連動品項與進貨明細、分類排序一次完成；`0019` 防止系統裡沒有任何使用中的管理員；`0018` 進貨單刪除改成可復原；`0017` 交接留言可標記已處理、編輯、可復原的刪除；`0016` 訂貨管家也可以重新啟用與刪除品項；`0015` 盤點數量可輸入0.5；`0014` 把庫存改成依有效期限分批，既有庫存會自動轉成一批。
 3. 複製 `.env.example` 為 `.env.local`。
 4. 填入：
 

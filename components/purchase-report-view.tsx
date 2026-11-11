@@ -276,8 +276,8 @@ export function PurchaseReportView({ canView, canManage }: { canView: boolean; c
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={(report?.trend ?? []).map((p) => ({ month: shortMonthLabel(p.month), fullMonth: monthLabel(p.month), totalAmount: p.totalAmount }))}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e8e2d5" vertical={false} />
-              <XAxis dataKey="month" tick={{ fontSize: 12, fill: "#71807b" }} axisLine={{ stroke: "#e8e2d5" }} tickLine={false} />
-              <YAxis tick={{ fontSize: 12, fill: "#71807b" }} axisLine={false} tickLine={false} tickFormatter={(v) => v >= 1000 ? `${Math.round(v / 1000)}k` : String(v)} />
+              <XAxis dataKey="month" tick={{ fontSize: 12, fill: "#5c6b66" }} axisLine={{ stroke: "#e8e2d5" }} tickLine={false} />
+              <YAxis tick={{ fontSize: 12, fill: "#5c6b66" }} axisLine={false} tickLine={false} tickFormatter={(v) => v >= 1000 ? `${Math.round(v / 1000)}k` : String(v)} />
               <Tooltip content={<ChartTooltip />} cursor={{ fill: "#f4f0e7" }} />
               <Bar dataKey="totalAmount" fill="#153f35" radius={[6, 6, 0, 0]} />
             </BarChart>
@@ -290,7 +290,7 @@ export function PurchaseReportView({ canView, canManage }: { canView: boolean; c
             <ResponsiveContainer width="100%" height={Math.max(180, (report?.categories.length ?? 0) * 40)}>
               <BarChart data={report?.categories} layout="vertical" margin={{ left: 8, right: 24 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e8e2d5" horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 12, fill: "#71807b" }} axisLine={false} tickLine={false} tickFormatter={(v) => v >= 1000 ? `${Math.round(v / 1000)}k` : String(v)} />
+                <XAxis type="number" tick={{ fontSize: 12, fill: "#5c6b66" }} axisLine={false} tickLine={false} tickFormatter={(v) => v >= 1000 ? `${Math.round(v / 1000)}k` : String(v)} />
                 <YAxis type="category" dataKey="category" width={96} tick={{ fontSize: 12, fill: "#20332e" }} axisLine={false} tickLine={false} />
                 <Tooltip content={<ChartTooltip />} cursor={{ fill: "#f4f0e7" }} />
                 <Bar dataKey="totalAmount" radius={[0, 6, 6, 0]}>

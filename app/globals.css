@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-:root { --forest:#153f35; --forest-2:#0f312a; --gold:#c59c4d; --ivory:#f7f3e9; --paper:#fffdf8; --ink:#20332e; --muted:#71807b; --line:#e8e2d5; --sage:#dce9db; --red:#c96e55; --shadow:0 12px 35px rgba(35,54,46,.08); }
+:root { --forest:#153f35; --forest-2:#0f312a; --gold:#c59c4d; --ivory:#f7f3e9; --paper:#fffdf8; --ink:#20332e; --muted:#5c6b66; --line:#e8e2d5; --sage:#dce9db; --red:#c96e55; --shadow:0 12px 35px rgba(35,54,46,.08); }
 * { box-sizing:border-box; }
 html, body { margin:0; min-height:100%; background:var(--ivory); color:var(--ink); font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif; }
 button, input, select, textarea { font:inherit; }
@@ -527,3 +527,11 @@ td .row-menu-list button small { display:inline;margin-top:0; }
 .supplier-chips { display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:-4px 0 14px; }
 .supplier-chips small { color:#5b6a65;font-size:12px; }
 .supplier-chips .chip-button { height:32px;padding:0 12px;font-size:12.5px; }
+
+/* 手機／觸控裝置：小按鈕的點擊範圍至少 40px，彼此間距至少 8px（電腦滑鼠版不變）。用 min-width／min-height，才不會被前面各表格較具體的 height 規則蓋掉 */
+@media (max-width:760px), (pointer:coarse) {
+  .row-actions, .inventory-table .row-actions, .report-lines-table .row-actions, .staff-table .row-actions { gap:8px; }
+  .row-actions button, .purchase-card .row-menu-trigger { min-width:40px; min-height:40px; }
+  .remove-line, .note-delete, .password-field button { width:40px; height:40px; }
+  .receipt-lines article>label:first-of-type, .charge-row>label:first-of-type, .charge-row>.form-grid { padding-right:52px; }
+}
